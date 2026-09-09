@@ -1,0 +1,31 @@
+{
+  "name": "Golf Team App",
+  "image": "mcr.microsoft.com/devcontainers/python:3.11",
+
+  "features": {
+    "ghcr.io/devcontainers/features/node:1": {
+      "version": "20"
+    }
+  },
+
+  // Ports the app uses — Codespaces will auto-forward these and give you
+  // a public-ish preview URL for each when they're running.
+  "forwardPorts": [8000, 5173],
+  "portsAttributes": {
+    "8000": { "label": "Backend (FastAPI)" },
+    "5173": { "label": "Frontend (Vite)" }
+  },
+
+  // Runs once when the Codespace is first created
+  "postCreateCommand": "bash .devcontainer/setup.sh",
+
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "dbaeumer.vscode-eslint",
+        "esbenp.prettier-vscode"
+      ]
+    }
+  }
+}
