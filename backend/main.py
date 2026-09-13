@@ -10,6 +10,9 @@ from fastapi import FastAPI, HTTPException, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from supabase import create_client, Client
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # ---------------------------------------------------------------------------
 # Setup
@@ -102,6 +105,13 @@ def create_course(course: CourseIn, player=Depends(get_current_player)):
     return course_row
 
 
+@app.get("/courses")
+def list_courses():
+    """Lists all courses — used to populate the course picker before starting a round."""
+    courses = supabase.table("courses").select("id, name, created_at").order("name").execute().data
+    return courses
+
+
 @app.get("/courses/{course_id}")
 def get_course(course_id: UUID):
     course = supabase.table("courses").select("*").eq("id", str(course_id)).single().execute().data
@@ -191,8 +201,11 @@ def submit_hole_score(round_id: UUID, score: HoleScoreIn, player=Depends(get_cur
     if not round_row or round_row["player_id"] != player["id"]:
         raise HTTPException(403, "Not your round")
 
+    score_data = score.model_dump()
+    score_data["hole_id"] = str(score_data["hole_id"])
+
     row = supabase.table("hole_scores").upsert(
-        {"round_id": str(round_id), **score.model_dump()},
+        {"round_id": str(round_id), **score_data},
         on_conflict="round_id,hole_id",
     ).execute().data[0]
     return row
@@ -211,6 +224,50 @@ def complete_round(round_id: UUID, player=Depends(get_current_player)):
         {"completed_at": "now()", "total_putts": total_putts}
     ).eq("id", str(round_id)).execute().data[0]
     return updated
+
+
+@app.get("/rounds/{round_id}/summary")
+def round_summary(round_id: UUID, player=Depends(get_current_player)):
+    """
+    Summary for a single round, at whatever point it's at — this works for a
+    finished round OR one still in progress, so it's what powers both the
+    'turn' summary after 9 holes and the final summary after 18.
+    """
+    round_row = supabase.table("rounds").select("*").eq("id", str(round_id)).single().execute().data
+    if not round_row:
+        raise HTTPException(404, "Round not found")
+    if round_row["player_id"] != player["id"] and player["role"] != "coach":
+        raise HTTPException(403, "Not authorized")
+
+    scores = (
+        supabase.table("hole_scores")
+        .select("strokes, putts, fairway_hit, gir, holes(hole_number, par)")
+        .eq("round_id", str(round_id))
+        .execute()
+        .data
+    )
+
+    if not scores:
+        return {"holes_played": 0}
+
+    total_strokes = sum(s["strokes"] for s in scores)
+    total_par = sum(s["holes"]["par"] for s in scores)
+    putts_total = sum(s["putts"] for s in scores if s["putts"] is not None)
+    girs_hit = sum(1 for s in scores if s["gir"])
+    fairway_scores = [s for s in scores if s["fairway_hit"] is not None]
+    fairways_hit = sum(1 for s in fairway_scores if s["fairway_hit"])
+
+    return {
+        "holes_played": len(scores),
+        "total_strokes": total_strokes,
+        "score_to_par": total_strokes - total_par,
+        "putts": putts_total,
+        "gir_count": girs_hit,
+        "gir_pct": round(100 * girs_hit / len(scores), 1),
+        "fairway_count": fairways_hit,
+        "fairway_pct": round(100 * fairways_hit / len(fairway_scores), 1) if fairway_scores else None,
+        "completed": round_row["completed_at"] is not None,
+    }
 
 
 @app.get("/players/{player_id}/stats")
