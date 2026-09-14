@@ -35,16 +35,24 @@ function formatToPar(n) {
 }
 
 const styles = {
-  page: { fontFamily: 'system-ui, sans-serif', padding: '1.5rem', maxWidth: 480, margin: '0 auto' },
+  page: {
+    fontFamily: 'system-ui, sans-serif',
+    padding: '1.5rem',
+    maxWidth: 480,
+    margin: '1.5rem auto',
+    background: 'white',
+    borderRadius: '0.75rem',
+    boxShadow: '0 2px 10px rgba(0,0,0,0.06)',
+  },
   grid: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem', marginTop: '1.5rem' },
-  card: { background: '#f4f6f4', borderRadius: '0.75rem', padding: '1.25rem', textAlign: 'center' },
-  cardValue: { fontSize: '1.6rem', fontWeight: 'bold', color: '#0b3d2e' },
+  card: { background: '#eef1f5', borderRadius: '0.75rem', padding: '1.25rem', textAlign: 'center' },
+  cardValue: { fontSize: '1.6rem', fontWeight: 'bold', color: '#004b87' },
   cardLabel: { fontSize: '0.85rem', color: '#666', marginTop: '0.25rem' },
   button: {
     width: '100%',
     padding: '1rem',
     marginTop: '2rem',
-    background: '#0b3d2e',
+    background: '#004b87',
     color: 'white',
     border: 'none',
     borderRadius: '0.5rem',

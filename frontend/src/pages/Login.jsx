@@ -112,14 +112,22 @@ export default function Login() {
 }
 
 const styles = {
-  page: { fontFamily: 'system-ui, sans-serif', padding: '1.5rem', maxWidth: 380, margin: '0 auto' },
+  page: {
+    fontFamily: 'system-ui, sans-serif',
+    padding: '2rem 1.5rem',
+    maxWidth: 380,
+    margin: '2rem auto',
+    background: 'white',
+    borderRadius: '0.75rem',
+    boxShadow: '0 2px 10px rgba(0,0,0,0.08)',
+  },
   label: { display: 'block', marginTop: '1rem', fontWeight: 600 },
   input: { width: '100%', padding: '0.75rem', fontSize: '1.1rem', marginTop: '0.25rem', boxSizing: 'border-box' },
   button: {
     width: '100%',
     padding: '1rem',
     marginTop: '1.5rem',
-    background: '#0b3d2e',
+    background: '#004b87',
     color: 'white',
     border: 'none',
     borderRadius: '0.5rem',
@@ -130,7 +138,7 @@ const styles = {
     marginTop: '1rem',
     background: 'none',
     border: 'none',
-    color: '#0b3d2e',
+    color: '#004b87',
     textDecoration: 'underline',
     fontSize: '0.95rem',
   },

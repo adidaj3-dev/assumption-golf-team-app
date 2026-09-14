@@ -389,14 +389,22 @@ function ToggleRow({ label, value, onChange }) {
 }
 
 const styles = {
-  page: { fontFamily: 'system-ui, sans-serif', padding: '1.5rem', maxWidth: 420, margin: '0 auto' },
+  page: {
+    fontFamily: 'system-ui, sans-serif',
+    padding: '1.5rem',
+    maxWidth: 420,
+    margin: '1.5rem auto',
+    background: 'white',
+    borderRadius: '0.75rem',
+    boxShadow: '0 2px 10px rgba(0,0,0,0.06)',
+  },
   label: { display: 'block', marginTop: '1rem', fontWeight: 600 },
   input: { width: '100%', padding: '0.75rem', fontSize: '1.25rem', marginTop: '0.25rem' },
   button: {
     width: '100%',
     padding: '1rem',
     marginTop: '1.5rem',
-    background: '#0b3d2e',
+    background: '#004b87',
     color: 'white',
     border: 'none',
     borderRadius: '0.5rem',
@@ -417,13 +425,13 @@ const styles = {
     background: 'white',
   },
   groupBtnActive: {
-    background: '#0b3d2e',
+    background: '#004b87',
     color: 'white',
-    borderColor: '#0b3d2e',
+    borderColor: '#004b87',
   },
   toggleRow: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '1rem' },
   toggleBtn: { padding: '0.5rem 1rem', marginLeft: '0.5rem', border: '1px solid #ccc', borderRadius: '0.4rem' },
-  toggleActive: { background: '#0b3d2e', color: 'white', borderColor: '#0b3d2e' },
+  toggleActive: { background: '#004b87', color: 'white', borderColor: '#004b87' },
   topRow: {
     display: 'flex',
     justifyContent: 'space-between',
@@ -452,8 +460,8 @@ const styles = {
     padding: '0.75rem',
     marginBottom: '1rem',
     background: 'none',
-    border: '1px dashed #0b3d2e',
-    color: '#0b3d2e',
+    border: '1px dashed #004b87',
+    color: '#004b87',
     borderRadius: '0.4rem',
     fontSize: '0.95rem',
   },
@@ -474,8 +482,8 @@ const styles = {
     color: '#666',
   },
   tabBtnActive: {
-    borderBottom: '3px solid #0b3d2e',
-    color: '#0b3d2e',
+    borderBottom: '3px solid #004b87',
+    color: '#004b87',
     fontWeight: 600,
   },
 }

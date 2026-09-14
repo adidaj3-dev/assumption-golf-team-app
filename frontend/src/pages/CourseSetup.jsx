@@ -155,7 +155,15 @@ export default function CourseSetup({ onCreated }) {
 }
 
 const styles = {
-  page: { fontFamily: 'system-ui, sans-serif', padding: '1.5rem', maxWidth: 480, margin: '0 auto' },
+  page: {
+    fontFamily: 'system-ui, sans-serif',
+    padding: '1.5rem',
+    maxWidth: 480,
+    margin: '1.5rem auto',
+    background: 'white',
+    borderRadius: '0.75rem',
+    boxShadow: '0 2px 10px rgba(0,0,0,0.06)',
+  },
   label: { display: 'block', marginTop: '1rem', fontWeight: 600 },
   input: { width: '100%', padding: '0.75rem', fontSize: '1.1rem', marginTop: '0.25rem', boxSizing: 'border-box' },
   table: { width: '100%', marginTop: '1.5rem', borderCollapse: 'collapse' },
@@ -164,12 +172,12 @@ const styles = {
   selectSmall: { padding: '0.4rem', fontSize: '1rem' },
   warning: { color: '#8a6d00', marginTop: '1rem', fontSize: '0.9rem' },
   error: { color: '#b00020', marginTop: '0.75rem' },
-  success: { color: '#0b3d2e', marginTop: '0.75rem', fontWeight: 600 },
+  success: { color: '#004b87', marginTop: '0.75rem', fontWeight: 600 },
   button: {
     width: '100%',
     padding: '1rem',
     marginTop: '1.5rem',
-    background: '#0b3d2e',
+    background: '#004b87',
     color: 'white',
     border: 'none',
     borderRadius: '0.5rem',

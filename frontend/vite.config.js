@@ -8,14 +8,16 @@ export default defineConfig({
     VitePWA({
       registerType: 'autoUpdate',
       manifest: {
-        name: 'Team Golf Scoring',
-        short_name: 'GolfScore',
+        name: 'Assumption Golf',
+        short_name: 'AU Golf',
         start_url: '/',
         display: 'standalone',
-        background_color: '#0b3d2e',
-        theme_color: '#0b3d2e',
+        background_color: '#004b87',
+        theme_color: '#004b87',
         icons: [
           // Drop real 192x192 and 512x512 png icons into /public and reference them here
+          // (ideally cropped from the Greyhounds logo once you have it — square,
+          // some padding around the mark tends to look best as a home screen icon)
           { src: '/icon-192.png', sizes: '192x192', type: 'image/png' },
           { src: '/icon-512.png', sizes: '512x512', type: 'image/png' }
         ]

@@ -51,15 +51,23 @@ export default function Leaderboard() {
 }
 
 const styles = {
-  page: { fontFamily: 'system-ui, sans-serif', padding: '1rem', maxWidth: 480, margin: '0 auto' },
-  title: { textAlign: 'center', color: '#0b3d2e' },
+  page: {
+    fontFamily: 'system-ui, sans-serif',
+    padding: '1.5rem 1rem',
+    maxWidth: 480,
+    margin: '1.5rem auto',
+    background: 'white',
+    borderRadius: '0.75rem',
+    boxShadow: '0 2px 10px rgba(0,0,0,0.06)',
+  },
+  title: { textAlign: 'center', color: '#004b87' },
   list: { display: 'flex', flexDirection: 'column', gap: '0.5rem' },
   row: {
     display: 'grid',
     gridTemplateColumns: '2rem 1fr 3rem 4rem',
     alignItems: 'center',
     padding: '0.75rem',
-    background: '#f4f6f4',
+    background: '#eef1f5',
     borderRadius: '0.5rem',
   },
   rank: { fontWeight: 'bold', color: '#888' },
