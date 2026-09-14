@@ -4,8 +4,21 @@ import Login from './Login.jsx'
 import CourseSetup from './CourseSetup.jsx'
 import RoundSummary from './RoundSummary.jsx'
 import Stats from './Stats.jsx'
+import CoachDashboard from './CoachDashboard.jsx'
 
 const API_BASE = import.meta.env.VITE_API_BASE
+
+function strokeOptions(par) {
+  if (par === 3) return range(1, 6)
+  if (par === 4) return range(1, 8)
+  return range(2, 9) // par 5
+}
+
+function range(start, end) {
+  const out = []
+  for (let i = start; i <= end; i++) out.push(i)
+  return out
+}
 
 export default function ScoreEntry() {
   const [session, setSession] = useState(null)
@@ -13,11 +26,11 @@ export default function ScoreEntry() {
   const [courses, setCourses] = useState([])
   const [selectedCourseId, setSelectedCourseId] = useState('')
   const [showCourseSetup, setShowCourseSetup] = useState(false)
-  const [tab, setTab] = useState('play') // 'play' or 'stats'
+  const [tab, setTab] = useState('play') // 'play', 'stats', or 'team' (coach only)
   const [round, setRound] = useState(null)
   const [holes, setHoles] = useState([])
   const [holeIndex, setHoleIndex] = useState(0)
-  const [form, setForm] = useState({ strokes: '', putts: '', fairway_hit: null, gir: null })
+  const [form, setForm] = useState({ strokes: null, putts: null, fairway_hit: null, gir: null })
   const [error, setError] = useState(null)
   const [summary, setSummary] = useState(null) // holds turn/final summary data when shown
   const [summaryIsTurn, setSummaryIsTurn] = useState(false)
@@ -99,13 +112,13 @@ export default function ScoreEntry() {
         method: 'POST',
         body: JSON.stringify({
           hole_id: hole.id,
-          strokes: Number(form.strokes),
-          putts: form.putts ? Number(form.putts) : null,
+          strokes: form.strokes,
+          putts: form.putts,
           fairway_hit: hole.par === 3 ? null : form.fairway_hit,
           gir: form.gir,
         }),
       })
-      setForm({ strokes: '', putts: '', fairway_hit: null, gir: null })
+      setForm({ strokes: null, putts: null, fairway_hit: null, gir: null })
 
       const holesJustCompleted = holeIndex + 1
 
@@ -124,6 +137,32 @@ export default function ScoreEntry() {
       } else {
         setHoleIndex(holeIndex + 1)
       }
+    } catch (err) {
+      setError(err.message)
+    }
+  }
+
+  function goToPreviousHole() {
+    setError(null)
+    setForm({ strokes: null, putts: null, fairway_hit: null, gir: null })
+    setHoleIndex(Math.max(0, holeIndex - 1))
+  }
+
+  async function endRoundEarly() {
+    const holesDone = holeIndex + (form.strokes ? 1 : 0)
+    const confirmed = window.confirm(
+      holesDone === 0
+        ? 'End this round now with no holes recorded?'
+        : `End this round now after ${holesDone} hole${holesDone === 1 ? '' : 's'}? This can't be undone.`
+    )
+    if (!confirmed) return
+
+    setError(null)
+    try {
+      await apiCall(`/rounds/${round.id}/complete`, { method: 'POST' })
+      const finalSummary = await apiCall(`/rounds/${round.id}/summary`)
+      setSummary(finalSummary)
+      setSummaryIsTurn(false)
     } catch (err) {
       setError(err.message)
     }
@@ -191,24 +230,33 @@ export default function ScoreEntry() {
 
     return (
       <div style={styles.page}>
+        <div style={styles.topRow}>
+          {holeIndex > 0 && (
+            <button style={styles.smallBtn} onClick={goToPreviousHole}>← Back</button>
+          )}
+          <button style={styles.smallBtnDanger} onClick={endRoundEarly}>End Round</button>
+        </div>
+
         <h2>Hole {hole.hole_number} — Par {hole.par}</h2>
 
         <label style={styles.label}>Strokes</label>
-        <input
-          type="number"
-          inputMode="numeric"
-          style={styles.input}
+        <ButtonGroup
+          options={strokeOptions(hole.par)}
           value={form.strokes}
-          onChange={(e) => setForm({ ...form, strokes: e.target.value })}
+          onChange={(v) => setForm({ ...form, strokes: v })}
         />
 
         <label style={styles.label}>Putts</label>
-        <input
-          type="number"
-          inputMode="numeric"
-          style={styles.input}
+        <ButtonGroup
+          options={[
+            { value: 1, label: '1' },
+            { value: 2, label: '2' },
+            { value: 3, label: '3' },
+            { value: 4, label: '4' },
+            { value: 5, label: '4+' },
+          ]}
           value={form.putts}
-          onChange={(e) => setForm({ ...form, putts: e.target.value })}
+          onChange={(v) => setForm({ ...form, putts: v })}
         />
 
         {hole.par !== 3 && (
@@ -230,7 +278,7 @@ export default function ScoreEntry() {
     )
   }
 
-  // Not mid-round: show the Play / My Stats tabs
+  // Not mid-round: show the nav tabs (Play / My Stats / Team Stats for coaches)
   return (
     <div>
       <div style={styles.tabBar}>
@@ -246,11 +294,19 @@ export default function ScoreEntry() {
         >
           My Stats
         </button>
+        {player.role === 'coach' && (
+          <button
+            style={{ ...styles.tabBtn, ...(tab === 'team' ? styles.tabBtnActive : {}) }}
+            onClick={() => setTab('team')}
+          >
+            Team
+          </button>
+        )}
       </div>
 
-      {tab === 'stats' ? (
-        <Stats player={player} />
-      ) : (
+      {tab === 'stats' && <Stats player={player} />}
+      {tab === 'team' && player.role === 'coach' && <CoachDashboard />}
+      {tab === 'play' && (
         <div style={styles.page}>
           <h2>Start a round</h2>
 
@@ -285,6 +341,27 @@ export default function ScoreEntry() {
           )}
         </div>
       )}
+    </div>
+  )
+}
+
+function ButtonGroup({ options, value, onChange }) {
+  return (
+    <div style={styles.buttonGroup}>
+      {options.map((opt) => {
+        const optValue = typeof opt === 'object' ? opt.value : opt
+        const optLabel = typeof opt === 'object' ? opt.label : opt
+        return (
+          <button
+            key={optValue}
+            type="button"
+            style={{ ...styles.groupBtn, ...(value === optValue ? styles.groupBtnActive : {}) }}
+            onClick={() => onChange(optValue)}
+          >
+            {optLabel}
+          </button>
+        )
+      })}
     </div>
   )
 }
@@ -325,9 +402,50 @@ const styles = {
     borderRadius: '0.5rem',
     fontSize: '1.1rem',
   },
+  buttonGroup: {
+    display: 'flex',
+    flexWrap: 'wrap',
+    gap: '0.5rem',
+    marginTop: '0.5rem',
+  },
+  groupBtn: {
+    minWidth: '3rem',
+    padding: '0.75rem',
+    fontSize: '1.1rem',
+    border: '1px solid #ccc',
+    borderRadius: '0.5rem',
+    background: 'white',
+  },
+  groupBtnActive: {
+    background: '#0b3d2e',
+    color: 'white',
+    borderColor: '#0b3d2e',
+  },
   toggleRow: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '1rem' },
   toggleBtn: { padding: '0.5rem 1rem', marginLeft: '0.5rem', border: '1px solid #ccc', borderRadius: '0.4rem' },
   toggleActive: { background: '#0b3d2e', color: 'white', borderColor: '#0b3d2e' },
+  topRow: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    marginBottom: '1rem',
+  },
+  smallBtn: {
+    padding: '0.5rem 0.9rem',
+    fontSize: '0.9rem',
+    border: '1px solid #ccc',
+    borderRadius: '0.4rem',
+    background: 'white',
+    color: '#333',
+  },
+  smallBtnDanger: {
+    padding: '0.5rem 0.9rem',
+    fontSize: '0.9rem',
+    border: '1px solid #b00020',
+    borderRadius: '0.4rem',
+    background: 'white',
+    color: '#b00020',
+    marginLeft: 'auto',
+  },
   linkBtn: {
     display: 'block',
     width: '100%',

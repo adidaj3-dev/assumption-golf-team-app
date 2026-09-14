@@ -45,8 +45,28 @@ export default function Stats({ player }) {
         <StatCard label="Scoring Avg" value={formatToPar(stats.scoring_avg_to_par)} />
         <StatCard label="GIR %" value={stats.gir_pct != null ? `${stats.gir_pct}%` : '—'} />
         <StatCard label="Fairways %" value={stats.fairway_pct != null ? `${stats.fairway_pct}%` : '—'} />
-        <StatCard label="Putts / Round" value={stats.putts_per_round} />
+        <StatCard label="Putts / Round (avg)" value={stats.putts_per_round} />
       </div>
+
+      {stats.last_round && (
+        <>
+          <h3 style={styles.sectionTitle}>Most Recent Round</h3>
+          <div style={styles.lastRoundRow}>
+            <LastRoundCard label="Front 9" value={formatToPar(stats.last_round.front9_to_par)} />
+            <LastRoundCard label="Back 9" value={formatToPar(stats.last_round.back9_to_par)} />
+            <LastRoundCard label="Total" value={formatToPar(stats.last_round.total_to_par)} highlight />
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
+function LastRoundCard({ label, value, highlight }) {
+  return (
+    <div style={{ ...styles.card, ...(highlight ? styles.cardHighlight : {}) }}>
+      <div style={{ ...styles.cardValue, ...(highlight ? { color: 'white' } : {}) }}>{value}</div>
+      <div style={{ ...styles.cardLabel, ...(highlight ? { color: '#e0e0e0' } : {}) }}>{label}</div>
     </div>
   )
 }
@@ -61,6 +81,7 @@ function StatCard({ label, value }) {
 }
 
 function formatToPar(n) {
+  if (n == null) return '—'
   if (n === 0) return 'E'
   return n > 0 ? `+${n}` : `${n}`
 }
@@ -69,7 +90,10 @@ const styles = {
   page: { fontFamily: 'system-ui, sans-serif', padding: '1.5rem', maxWidth: 480, margin: '0 auto' },
   subtitle: { color: '#666', marginTop: '-0.5rem' },
   grid: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem', marginTop: '1.5rem' },
+  sectionTitle: { marginTop: '2rem', marginBottom: '0.5rem' },
+  lastRoundRow: { display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '0.75rem' },
   card: { background: '#f4f6f4', borderRadius: '0.75rem', padding: '1.25rem', textAlign: 'center' },
+  cardHighlight: { background: '#0b3d2e' },
   cardValue: { fontSize: '1.8rem', fontWeight: 'bold', color: '#0b3d2e' },
   cardLabel: { fontSize: '0.85rem', color: '#666', marginTop: '0.25rem' },
   error: { color: '#b00020' },

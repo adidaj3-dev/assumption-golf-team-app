@@ -154,7 +154,7 @@ def get_public_leaderboard(slug: str):
 
     rounds = (
         supabase.table("rounds")
-        .select("*, players(full_name), hole_scores(strokes, holes(par))")
+        .select("id, completed_at, players(full_name)")
         .eq("tournament_id", tournament["id"])
         .execute()
         .data
@@ -162,7 +162,13 @@ def get_public_leaderboard(slug: str):
 
     leaderboard = []
     for r in rounds:
-        scores = r.get("hole_scores", [])
+        scores = (
+            supabase.table("hole_scores")
+            .select("strokes, holes(par)")
+            .eq("round_id", r["id"])
+            .execute()
+            .data
+        )
         total_strokes = sum(s["strokes"] for s in scores)
         total_par = sum(s["holes"]["par"] for s in scores)
         leaderboard.append(
@@ -267,6 +273,125 @@ def round_summary(round_id: UUID, player=Depends(get_current_player)):
         "fairway_count": fairways_hit,
         "fairway_pct": round(100 * fairways_hit / len(fairway_scores), 1) if fairway_scores else None,
         "completed": round_row["completed_at"] is not None,
+        "started_at": round_row["started_at"],
+        "completed_at": round_row["completed_at"],
+    }
+
+
+@app.get("/players/{player_id}/rounds")
+def player_rounds(player_id: UUID, player=Depends(get_current_player)):
+    """Lists every round a player has (in-progress or completed), newest
+    first, with a quick summary of each — used for the coach's per-player
+    round history view."""
+    if player["id"] != str(player_id) and player["role"] != "coach":
+        raise HTTPException(403, "Not authorized")
+
+    rounds = (
+        supabase.table("rounds")
+        .select("id, started_at, completed_at, courses(name)")
+        .eq("player_id", str(player_id))
+        .order("started_at", desc=True)
+        .execute()
+        .data
+    )
+
+    results = []
+    for r in rounds:
+        scores = (
+            supabase.table("hole_scores")
+            .select("strokes, holes(par)")
+            .eq("round_id", r["id"])
+            .execute()
+            .data
+        )
+        total_strokes = sum(s["strokes"] for s in scores)
+        total_par = sum(s["holes"]["par"] for s in scores)
+        results.append({
+            "id": r["id"],
+            "course_name": r["courses"]["name"] if r["courses"] else "Unknown course",
+            "started_at": r["started_at"],
+            "completed_at": r["completed_at"],
+            "holes_played": len(scores),
+            "score_to_par": (total_strokes - total_par) if scores else None,
+            "completed": r["completed_at"] is not None,
+        })
+    return results
+
+
+def _compute_player_stats(player_id: str) -> dict:
+    """Shared stats logic — used by both the player's own stats screen and
+    the coach's team overview, so both stay consistent."""
+    completed_rounds = (
+        supabase.table("rounds")
+        .select("id, completed_at")
+        .eq("player_id", player_id)
+        .not_.is_("completed_at", "null")
+        .order("completed_at", desc=True)
+        .execute()
+        .data
+    )
+
+    if not completed_rounds:
+        return {"rounds_played": 0, "last_round": None}
+
+    round_ids = [r["id"] for r in completed_rounds]
+
+    all_scores = (
+        supabase.table("hole_scores")
+        .select("round_id, strokes, putts, fairway_hit, gir, holes(par)")
+        .in_("round_id", round_ids)
+        .execute()
+        .data
+    )
+
+    total_score_to_par = 0
+    fairways_hit = fairways_total = 0
+    girs_hit = holes_total = 0
+    putts_total = 0
+
+    for s in all_scores:
+        total_score_to_par += s["strokes"] - s["holes"]["par"]
+        holes_total += 1
+        if s["gir"]:
+            girs_hit += 1
+        if s["fairway_hit"] is not None:
+            fairways_total += 1
+            if s["fairway_hit"]:
+                fairways_hit += 1
+        if s["putts"]:
+            putts_total += s["putts"]
+
+    # Front-9 / back-9 breakdown for the most recent completed round
+    most_recent_id = completed_rounds[0]["id"]
+    last_round_scores = (
+        supabase.table("hole_scores")
+        .select("strokes, holes(hole_number, par)")
+        .eq("round_id", most_recent_id)
+        .execute()
+        .data
+    )
+    front = [s for s in last_round_scores if s["holes"]["hole_number"] <= 9]
+    back = [s for s in last_round_scores if s["holes"]["hole_number"] > 9]
+
+    def to_par(scores):
+        if not scores:
+            return None
+        return sum(s["strokes"] for s in scores) - sum(s["holes"]["par"] for s in scores)
+
+    last_round = {
+        "date": completed_rounds[0]["completed_at"],
+        "front9_to_par": to_par(front),
+        "back9_to_par": to_par(back),
+        "total_to_par": to_par(last_round_scores),
+    }
+
+    return {
+        "rounds_played": len(completed_rounds),
+        "scoring_avg_to_par": round(total_score_to_par / len(completed_rounds), 2),
+        "gir_pct": round(100 * girs_hit / holes_total, 1) if holes_total else None,
+        "fairway_pct": round(100 * fairways_hit / fairways_total, 1) if fairways_total else None,
+        "putts_per_round": round(putts_total / len(completed_rounds), 2),
+        "last_round": last_round,
     }
 
 
@@ -274,41 +399,27 @@ def round_summary(round_id: UUID, player=Depends(get_current_player)):
 def player_stats(player_id: UUID, player=Depends(get_current_player)):
     if player["id"] != str(player_id) and player["role"] != "coach":
         raise HTTPException(403, "Not authorized")
+    return _compute_player_stats(str(player_id))
 
-    rounds = (
-        supabase.table("rounds")
-        .select("*, hole_scores(strokes, putts, fairway_hit, gir, holes(par))")
-        .eq("player_id", str(player_id))
-        .not_.is_("completed_at", "null")
+
+@app.get("/coach/team-stats")
+def team_stats(player=Depends(get_current_player)):
+    """Coach-only: every player's stats in one call, for the coach dashboard."""
+    if player["role"] != "coach":
+        raise HTTPException(403, "Coach access only")
+
+    all_players = (
+        supabase.table("players")
+        .select("id, full_name, role")
+        .order("full_name")
         .execute()
         .data
     )
 
-    if not rounds:
-        return {"rounds_played": 0}
+    results = []
+    for p in all_players:
+        stats = _compute_player_stats(p["id"])
+        results.append({"player_id": p["id"], "full_name": p["full_name"], "role": p["role"], **stats})
 
-    total_score_to_par = 0
-    fairways_hit = fairways_total = 0
-    girs_hit = holes_total = 0
-    putts_total = 0
+    return results
 
-    for r in rounds:
-        for s in r["hole_scores"]:
-            total_score_to_par += s["strokes"] - s["holes"]["par"]
-            holes_total += 1
-            if s["gir"]:
-                girs_hit += 1
-            if s["fairway_hit"] is not None:
-                fairways_total += 1
-                if s["fairway_hit"]:
-                    fairways_hit += 1
-            if s["putts"]:
-                putts_total += s["putts"]
-
-    return {
-        "rounds_played": len(rounds),
-        "scoring_avg_to_par": round(total_score_to_par / len(rounds), 2),
-        "gir_pct": round(100 * girs_hit / holes_total, 1) if holes_total else None,
-        "fairway_pct": round(100 * fairways_hit / fairways_total, 1) if fairways_total else None,
-        "putts_per_round": round(putts_total / len(rounds), 2),
-    }
