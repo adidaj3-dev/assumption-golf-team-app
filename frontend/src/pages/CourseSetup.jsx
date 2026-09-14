@@ -8,11 +8,13 @@ function emptyHoles(count) {
     hole_number: i + 1,
     par: 4,
     handicap: i + 1,
+    yardage: '',
   }))
 }
 
 export default function CourseSetup({ onCreated }) {
   const [name, setName] = useState('')
+  const [teeBox, setTeeBox] = useState('')
   const [holeCount, setHoleCount] = useState(18)
   const [holes, setHoles] = useState(emptyHoles(18))
   const [error, setError] = useState(null)
@@ -26,7 +28,7 @@ export default function CourseSetup({ onCreated }) {
 
   function updateHole(index, field, value) {
     const next = [...holes]
-    next[index] = { ...next[index], [field]: Number(value) }
+    next[index] = { ...next[index], [field]: field === 'yardage' ? value : Number(value) }
     setHoles(next)
   }
 
@@ -40,13 +42,19 @@ export default function CourseSetup({ onCreated }) {
       const { data: sessionData } = await supabase.auth.getSession()
       const token = sessionData.session?.access_token
 
+      const holesPayload = holes.map((h) => ({
+        ...h,
+        yardage: h.yardage === '' ? null : Number(h.yardage),
+        tee_box: teeBox || null,
+      }))
+
       const res = await fetch(`${API_BASE}/courses`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${token}`,
         },
-        body: JSON.stringify({ name, holes }),
+        body: JSON.stringify({ name, holes: holesPayload }),
       })
 
       if (!res.ok) {
@@ -57,6 +65,7 @@ export default function CourseSetup({ onCreated }) {
       const course = await res.json()
       setSuccess(`Course "${course.name}" created.`)
       setName('')
+      setTeeBox('')
       setHoleCount(18)
       setHoles(emptyHoles(18))
       if (onCreated) onCreated(course)
@@ -75,6 +84,9 @@ export default function CourseSetup({ onCreated }) {
     new Set(handicapValues).size === handicapValues.length &&
     handicapValues.every((h) => h >= 1 && h <= holeCount)
 
+  const totalPar = holes.reduce((sum, h) => sum + h.par, 0)
+  const totalYardage = holes.reduce((sum, h) => sum + (Number(h.yardage) || 0), 0)
+
   return (
     <div style={styles.page}>
       <h2>Add a course</h2>
@@ -85,7 +97,16 @@ export default function CourseSetup({ onCreated }) {
           style={styles.input}
           value={name}
           onChange={(e) => setName(e.target.value)}
+          placeholder="e.g. Pleasant Valley — Men's"
           required
+        />
+
+        <label style={styles.label}>Tee box (optional)</label>
+        <input
+          style={styles.input}
+          value={teeBox}
+          onChange={(e) => setTeeBox(e.target.value)}
+          placeholder="e.g. Blue, White, Red"
         />
 
         <label style={styles.label}>Number of holes</label>
@@ -104,6 +125,7 @@ export default function CourseSetup({ onCreated }) {
               <th style={styles.th}>Hole</th>
               <th style={styles.th}>Par</th>
               <th style={styles.th}>Handicap</th>
+              <th style={styles.th}>Yardage</th>
             </tr>
           </thead>
           <tbody>
@@ -132,9 +154,27 @@ export default function CourseSetup({ onCreated }) {
                     ))}
                   </select>
                 </td>
+                <td style={styles.td}>
+                  <input
+                    type="number"
+                    inputMode="numeric"
+                    style={styles.yardageInput}
+                    value={h.yardage}
+                    onChange={(e) => updateHole(i, 'yardage', e.target.value)}
+                    placeholder="yds"
+                  />
+                </td>
               </tr>
             ))}
           </tbody>
+          <tfoot>
+            <tr>
+              <td style={styles.totalLabel}>Total</td>
+              <td style={styles.totalValue}>{totalPar}</td>
+              <td></td>
+              <td style={styles.totalValue}>{totalYardage > 0 ? totalYardage : '—'}</td>
+            </tr>
+          </tfoot>
         </table>
 
         {!handicapsValid && (
@@ -170,6 +210,9 @@ const styles = {
   th: { textAlign: 'left', borderBottom: '2px solid #ddd', padding: '0.4rem' },
   td: { padding: '0.3rem 0.4rem', borderBottom: '1px solid #eee' },
   selectSmall: { padding: '0.4rem', fontSize: '1rem' },
+  yardageInput: { width: '4.5rem', padding: '0.4rem', fontSize: '1rem' },
+  totalLabel: { padding: '0.5rem 0.4rem', fontWeight: 'bold', borderTop: '2px solid #ddd' },
+  totalValue: { padding: '0.5rem 0.4rem', fontWeight: 'bold', borderTop: '2px solid #ddd', color: '#004b87' },
   warning: { color: '#8a6d00', marginTop: '1rem', fontSize: '0.9rem' },
   error: { color: '#b00020', marginTop: '0.75rem' },
   success: { color: '#004b87', marginTop: '0.75rem', fontWeight: 600 },

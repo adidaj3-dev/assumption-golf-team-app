@@ -55,6 +55,8 @@ class HoleIn(BaseModel):
     hole_number: int
     par: int
     handicap: int
+    yardage: Optional[int] = None
+    tee_box: Optional[str] = None
 
 
 class CourseIn(BaseModel):
@@ -422,4 +424,3 @@ def team_stats(player=Depends(get_current_player)):
         results.append({"player_id": p["id"], "full_name": p["full_name"], "role": p["role"], **stats})
 
     return results
-

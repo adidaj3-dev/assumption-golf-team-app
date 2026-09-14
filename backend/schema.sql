@@ -1,5 +1,9 @@
 -- Golf Team App — Phase 1 schema
 -- Run this in the Supabase SQL editor (or psql) to set up your database.
+-- This file reflects the actual live setup, including fixes made after the
+-- initial rollout (the is_coach() helper and the player self-signup policy
+-- below) — if you ever need to rebuild the database from scratch, this is
+-- the single source of truth.
 
 -- Players (extends Supabase auth.users with team-specific info)
 create table players (
@@ -24,6 +28,8 @@ create table holes (
     hole_number int not null check (hole_number between 1 and 18),
     par int not null check (par between 3 and 5),
     handicap int not null check (handicap between 1 and 18),
+    yardage int,
+    tee_box text,
     unique (course_id, hole_number)
 );
 
@@ -71,23 +77,44 @@ alter table rounds enable row level security;
 alter table hole_scores enable row level security;
 alter table players enable row level security;
 
+-- Helper function used by the "coach can read everything" policies below.
+-- This runs with elevated privileges (security definer) specifically so it
+-- can check a player's role WITHOUT re-triggering the policy that's calling
+-- it — checking players.role directly inside a policy ON the players table
+-- causes infinite recursion in Postgres, which this function avoids.
+create or replace function is_coach()
+returns boolean
+language sql
+security definer
+set search_path = public
+as $$
+  select exists (select 1 from players where id = auth.uid() and role = 'coach');
+$$;
+
 create policy "players read own row" on players
     for select using (auth.uid() = id);
 
 create policy "coaches read all players" on players
-    for select using (exists (select 1 from players p where p.id = auth.uid() and p.role = 'coach'));
+    for select using (is_coach());
+
+-- Lets a newly signed-up user create their OWN player row (id must match
+-- their own auth id), and only ever as role='player' — this is what makes
+-- the app's signup form work. Without it, sign-ups succeed in Supabase Auth
+-- but silently fail to get a matching players row.
+create policy "users can create own player row" on players
+    for insert with check (auth.uid() = id and role = 'player');
 
 create policy "players manage own rounds" on rounds
     for all using (auth.uid() = player_id);
 
 create policy "coaches read all rounds" on rounds
-    for select using (exists (select 1 from players p where p.id = auth.uid() and p.role = 'coach'));
+    for select using (is_coach());
 
 create policy "players manage own hole_scores" on hole_scores
     for all using (exists (select 1 from rounds r where r.id = round_id and r.player_id = auth.uid()));
 
 create policy "coaches read all hole_scores" on hole_scores
-    for select using (exists (select 1 from players p where p.id = auth.uid() and p.role = 'coach'));
+    for select using (is_coach());
 
 -- Public (anonymous) read access to a tournament's data, via the tournament's own tables — 
 -- handled in the API layer (Phase 1 backend) rather than direct table access, so anonymous
