@@ -5,6 +5,7 @@ import CourseSetup from './CourseSetup.jsx'
 import RoundSummary from './RoundSummary.jsx'
 import Stats from './Stats.jsx'
 import CoachDashboard from './CoachDashboard.jsx'
+import Practice from './Practice.jsx'
 
 const API_BASE = import.meta.env.VITE_API_BASE
 
@@ -294,6 +295,12 @@ export default function ScoreEntry() {
         >
           My Stats
         </button>
+        <button
+          style={{ ...styles.tabBtn, ...(tab === 'practice' ? styles.tabBtnActive : {}) }}
+          onClick={() => setTab('practice')}
+        >
+          Practice
+        </button>
         {player.role === 'coach' && (
           <button
             style={{ ...styles.tabBtn, ...(tab === 'team' ? styles.tabBtnActive : {}) }}
@@ -305,6 +312,7 @@ export default function ScoreEntry() {
       </div>
 
       {tab === 'stats' && <Stats player={player} />}
+      {tab === 'practice' && <Practice />}
       {tab === 'team' && player.role === 'coach' && <CoachDashboard />}
       {tab === 'play' && (
         <div style={styles.page}>

@@ -424,3 +424,121 @@ def team_stats(player=Depends(get_current_player)):
         results.append({"player_id": p["id"], "full_name": p["full_name"], "role": p["role"], **stats})
 
     return results
+
+
+# ---------------------------------------------------------------------------
+# Practice Combines
+#
+# Each combine is defined once, here, as data — not hardcoded per-combine UI
+# or logic. To add a new combine (e.g. a putting combine tomorrow), add a new
+# entry to COMBINE_DEFINITIONS with its own attempt count and result/point
+# options; the submit/list endpoints and the frontend both work generically
+# off this definition, no new code needed for the simple attempt-based ones.
+# ---------------------------------------------------------------------------
+
+COMBINE_DEFINITIONS = {
+    "tour_level_driver": {
+        "name": "Tour-Level Driver Combine",
+        "category": "Driver",
+        "objective": "Improve driver accuracy and distance.",
+        "instructions": "Hit 10 drives.",
+        "attempts": 10,
+        "attempt_labels": None,  # default labels "Attempt 1", "Attempt 2", ...
+        "results": [
+            {"code": "fairway_long", "label": "Fairway + Long", "points": 3},
+            {"code": "fairway", "label": "Fairway", "points": 2},
+            {"code": "near", "label": "Near Fairway", "points": 1},
+            {"code": "miss", "label": "Missed Fairway", "points": 0},
+        ],
+        "max_points": 30,
+        "benchmarks": [
+            {"level": "D1", "range": "18-24"},
+            {"level": "PGA", "range": "24-30"},
+        ],
+    },
+    "speed_accuracy_ladder": {
+        "name": "Speed + Accuracy Ladder",
+        "category": "Driver",
+        "objective": "Improve swing speed and accuracy.",
+        "instructions": "Hit 5 drives each at increasing speed levels.",
+        "attempts": 5,
+        "attempt_labels": ["Speed Level 1", "Speed Level 2", "Speed Level 3", "Speed Level 4", "Speed Level 5"],
+        "results": [
+            {"code": "fairway", "label": "Fairway", "points": 2},
+            {"code": "near", "label": "Near Fairway", "points": 1},
+            {"code": "miss", "label": "Missed Fairway", "points": 0},
+        ],
+        "max_points": 10,
+        "benchmarks": [
+            {"level": "D1", "range": "12-16"},
+            {"level": "PGA", "range": "16-20"},
+        ],
+    },
+}
+
+
+class CombineSubmitIn(BaseModel):
+    attempts: list[str]  # result codes, one per attempt, in order
+
+
+@app.get("/combines")
+def list_combines():
+    """Returns every combine definition — the frontend builds its rules
+    sheet and entry screen entirely from this, no per-combine frontend code."""
+    return [{"slug": slug, **definition} for slug, definition in COMBINE_DEFINITIONS.items()]
+
+
+@app.get("/combines/{slug}")
+def get_combine(slug: str):
+    definition = COMBINE_DEFINITIONS.get(slug)
+    if not definition:
+        raise HTTPException(404, "Combine not found")
+    return {"slug": slug, **definition}
+
+
+@app.post("/combines/{slug}/submit")
+def submit_combine(slug: str, submission: CombineSubmitIn, player=Depends(get_current_player)):
+    definition = COMBINE_DEFINITIONS.get(slug)
+    if not definition:
+        raise HTTPException(404, "Combine not found")
+
+    if len(submission.attempts) != definition["attempts"]:
+        raise HTTPException(400, f"Expected {definition['attempts']} attempts, got {len(submission.attempts)}")
+
+    points_by_code = {r["code"]: r["points"] for r in definition["results"]}
+    valid_codes = set(points_by_code.keys())
+
+    total_points = 0
+    for code in submission.attempts:
+        if code not in valid_codes:
+            raise HTTPException(400, f"Invalid result code: {code}")
+        total_points += points_by_code[code]
+
+    row = supabase.table("combine_sessions").insert({
+        "player_id": player["id"],
+        "combine_type": slug,
+        "attempts": submission.attempts,
+        "total_points": total_points,
+    }).execute().data[0]
+
+    return {**row, "max_points": definition["max_points"], "benchmarks": definition["benchmarks"]}
+
+
+@app.get("/players/{player_id}/combines")
+def player_combines(player_id: UUID, combine_type: Optional[str] = None, player=Depends(get_current_player)):
+    """History of a player's combine sessions, optionally filtered to one
+    combine type. Used both for the player's own practice history and the
+    coach's view into any player's progress."""
+    if player["id"] != str(player_id) and player["role"] != "coach":
+        raise HTTPException(403, "Not authorized")
+
+    query = (
+        supabase.table("combine_sessions")
+        .select("*")
+        .eq("player_id", str(player_id))
+        .order("completed_at", desc=True)
+    )
+    if combine_type:
+        query = query.eq("combine_type", combine_type)
+
+    return query.execute().data

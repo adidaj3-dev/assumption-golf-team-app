@@ -119,3 +119,22 @@ create policy "coaches read all hole_scores" on hole_scores
 -- Public (anonymous) read access to a tournament's data, via the tournament's own tables — 
 -- handled in the API layer (Phase 1 backend) rather than direct table access, so anonymous
 -- visitors never touch the players/rounds tables directly.
+
+-- Practice combines (driver, putting, etc.) — combine_type + attempts are
+-- validated against the COMBINE_DEFINITIONS dict in the backend, not here.
+create table combine_sessions (
+    id uuid primary key default gen_random_uuid(),
+    player_id uuid not null references players(id),
+    combine_type text not null,
+    attempts jsonb not null,       -- ordered array of result codes, e.g. ["fairway","near",...]
+    total_points int not null,
+    completed_at timestamptz default now()
+);
+
+alter table combine_sessions enable row level security;
+
+create policy "players manage own combine_sessions" on combine_sessions
+    for all using (auth.uid() = player_id);
+
+create policy "coaches read all combine_sessions" on combine_sessions
+    for select using (is_coach());
