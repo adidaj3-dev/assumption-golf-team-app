@@ -442,6 +442,7 @@ COMBINE_DEFINITIONS = {
         "category": "Driver",
         "objective": "Improve driver accuracy and distance.",
         "instructions": "Hit 10 drives.",
+        "scoring_type": "sum_points",
         "attempts": 10,
         "attempt_labels": None,  # default labels "Attempt 1", "Attempt 2", ...
         "results": [
@@ -461,6 +462,7 @@ COMBINE_DEFINITIONS = {
         "category": "Driver",
         "objective": "Improve swing speed and accuracy.",
         "instructions": "Hit 5 drives each at increasing speed levels.",
+        "scoring_type": "sum_points",
         "attempts": 5,
         "attempt_labels": ["Speed Level 1", "Speed Level 2", "Speed Level 3", "Speed Level 4", "Speed Level 5"],
         "results": [
@@ -472,6 +474,115 @@ COMBINE_DEFINITIONS = {
         "benchmarks": [
             {"level": "D1", "range": "12-16"},
             {"level": "PGA", "range": "16-20"},
+        ],
+    },
+    "three_six_nine_circle": {
+        "name": "3-6-9 Circle Drill",
+        "category": "Putting",
+        "objective": "Build consistency putting from inside 10 feet.",
+        "instructions": "Putt 10 balls each from 3, 6, and 9 feet (30 total).",
+        "scoring_type": "sum_points",
+        "attempts": 30,
+        "attempt_labels": [f"{d} ft — Putt {i}" for d in (3, 6, 9) for i in range(1, 11)],
+        "results": [
+            {"code": "make", "label": "Make", "points": 1},
+            {"code": "miss", "label": "Miss", "points": 0},
+        ],
+        "max_points": 30,
+        "benchmarks": [
+            {"level": "D2", "range": "15-20"},
+            {"level": "D1", "range": "18-22"},
+            {"level": "PGA", "range": "22-26"},
+        ],
+    },
+    "lag_putting": {
+        "name": "Lag Putting Combine",
+        "category": "Putting",
+        "objective": "Improve distance control on long putts.",
+        "instructions": "Putt 10 balls each from 20, 40, and 60 feet (30 total). Score each putt by how close it finishes.",
+        "scoring_type": "sum_points",
+        "attempts": 30,
+        "attempt_labels": [f"{d} ft — Putt {i}" for d in (20, 40, 60) for i in range(1, 11)],
+        "results": [
+            {"code": "inside3", "label": "Make / Inside 3 ft", "points": 3},
+            {"code": "inside6", "label": "Inside 6 ft", "points": 2},
+            {"code": "inside10", "label": "Inside 10 ft", "points": 1},
+            {"code": "outside10", "label": "Outside 10 ft", "points": 0},
+        ],
+        "max_points": 90,
+        "benchmarks": [
+            {"level": "D2", "range": "35-45"},
+            {"level": "D1", "range": "42-55"},
+            {"level": "PGA", "range": "55-65"},
+        ],
+    },
+    "pressure_ladder": {
+        "name": "Pressure Ladder",
+        "category": "Putting",
+        "objective": "Build pressure putting under increasing distance.",
+        "instructions": "Putt 2 balls each from 5, 7, 9, 11, and 13 feet. A distance only counts as a completion if BOTH putts are made.",
+        "scoring_type": "ladder_completions",
+        "groups": [
+            {"label": "5 ft"},
+            {"label": "7 ft"},
+            {"label": "9 ft"},
+            {"label": "11 ft"},
+            {"label": "13 ft"},
+        ],
+        "sub_attempts_per_group": 2,
+        "results": [
+            {"code": "make", "label": "Make", "points": 1},
+            {"code": "miss", "label": "Miss", "points": 0},
+        ],
+        "max_points": 5,  # max possible completions
+        "benchmarks": [
+            {"level": "D2", "range": "0-1"},
+            {"level": "D1", "range": "1-2"},
+            {"level": "PGA", "range": "3-5"},
+        ],
+    },
+    "make_percentage_test": {
+        "name": "Make-Percentage Test",
+        "category": "Putting",
+        "objective": "Measure short-range make percentage under volume.",
+        "instructions": "Putt 20 balls each from 5 feet and 8 feet (40 total).",
+        "scoring_type": "sum_points",
+        "attempts": 40,
+        "attempt_labels": [f"{d} ft — Putt {i}" for d in (5, 8) for i in range(1, 21)],
+        "results": [
+            {"code": "make", "label": "Make", "points": 1},
+            {"code": "miss", "label": "Miss", "points": 0},
+        ],
+        "max_points": 40,
+        "benchmarks": [
+            {"level": "D2", "range": "16-22"},
+            {"level": "D1", "range": "20-26"},
+            {"level": "PGA", "range": "28-34"},
+        ],
+    },
+    "tournament_putting_challenge": {
+        "name": "Tournament Putting Challenge",
+        "category": "Putting",
+        "objective": "Simulate real course putting conditions.",
+        "instructions": "Putt 5 balls each on a left-to-right breaker, right-to-left breaker, uphill putt, and downhill putt (20 total). Score each putt by how close it finishes.",
+        "scoring_type": "sum_points",
+        "attempts": 20,
+        "attempt_labels": [
+            f"{cond} — Putt {i}"
+            for cond in ("L-to-R Breaker", "R-to-L Breaker", "Uphill", "Downhill")
+            for i in range(1, 6)
+        ],
+        "results": [
+            {"code": "inside3", "label": "Make / Inside 3 ft", "points": 3},
+            {"code": "inside6", "label": "Inside 6 ft", "points": 2},
+            {"code": "inside10", "label": "Inside 10 ft", "points": 1},
+            {"code": "outside10", "label": "Outside 10 ft", "points": 0},
+        ],
+        "max_points": 60,
+        "benchmarks": [
+            {"level": "D2", "range": "18-26"},
+            {"level": "D1", "range": "22-30"},
+            {"level": "PGA", "range": "30-36"},
         ],
     },
 }
@@ -502,17 +613,31 @@ def submit_combine(slug: str, submission: CombineSubmitIn, player=Depends(get_cu
     if not definition:
         raise HTTPException(404, "Combine not found")
 
-    if len(submission.attempts) != definition["attempts"]:
-        raise HTTPException(400, f"Expected {definition['attempts']} attempts, got {len(submission.attempts)}")
+    scoring_type = definition.get("scoring_type", "sum_points")
+    valid_codes = {r["code"] for r in definition["results"]}
 
-    points_by_code = {r["code"]: r["points"] for r in definition["results"]}
-    valid_codes = set(points_by_code.keys())
+    if scoring_type == "ladder_completions":
+        expected_length = len(definition["groups"]) * definition["sub_attempts_per_group"]
+    else:
+        expected_length = definition["attempts"]
 
-    total_points = 0
+    if len(submission.attempts) != expected_length:
+        raise HTTPException(400, f"Expected {expected_length} attempts, got {len(submission.attempts)}")
+
     for code in submission.attempts:
         if code not in valid_codes:
             raise HTTPException(400, f"Invalid result code: {code}")
-        total_points += points_by_code[code]
+
+    if scoring_type == "ladder_completions":
+        per_group = definition["sub_attempts_per_group"]
+        total_points = 0
+        for g in range(len(definition["groups"])):
+            group_codes = submission.attempts[g * per_group:(g + 1) * per_group]
+            if all(code == "make" for code in group_codes):
+                total_points += 1
+    else:
+        points_by_code = {r["code"]: r["points"] for r in definition["results"]}
+        total_points = sum(points_by_code[code] for code in submission.attempts)
 
     row = supabase.table("combine_sessions").insert({
         "player_id": player["id"],

@@ -37,7 +37,11 @@ export default function Practice() {
   }
 
   function startCombine() {
-    setAttempts(Array(selected.attempts).fill(null))
+    const isLadder = selected.scoring_type === 'ladder_completions'
+    const length = isLadder
+      ? selected.groups.length * selected.sub_attempts_per_group
+      : selected.attempts
+    setAttempts(Array(length).fill(null))
     setView('entry')
   }
 
@@ -61,10 +65,22 @@ export default function Practice() {
     }
   }
 
+  const isLadder = selected?.scoring_type === 'ladder_completions'
   const pointsByCode = selected
     ? Object.fromEntries(selected.results.map((r) => [r.code, r.points]))
     : {}
-  const runningTotal = attempts.reduce((sum, code) => sum + (code ? pointsByCode[code] : 0), 0)
+
+  let runningTotal = 0
+  if (isLadder && selected) {
+    const per = selected.sub_attempts_per_group
+    for (let g = 0; g < selected.groups.length; g++) {
+      const groupCodes = attempts.slice(g * per, (g + 1) * per)
+      if (groupCodes.every((c) => c === 'make')) runningTotal += 1
+    }
+  } else {
+    runningTotal = attempts.reduce((sum, code) => sum + (code ? pointsByCode[code] : 0), 0)
+  }
+
   const allFilled = attempts.length > 0 && attempts.every((a) => a !== null)
 
   if (error) {
@@ -77,19 +93,20 @@ export default function Practice() {
   }
 
   if (view === 'result' && result) {
+    const unitLabel = isLadder ? 'completions' : 'points'
     return (
       <div style={styles.page}>
         <h2>{selected.name} — Complete</h2>
         <div style={styles.scoreBox}>
           <div style={styles.scoreValue}>{result.total_points} / {result.max_points}</div>
-          <div style={styles.scoreLabel}>points</div>
+          <div style={styles.scoreLabel}>{unitLabel}</div>
         </div>
 
         <h3 style={styles.sectionTitle}>Benchmarks</h3>
         {selected.benchmarks.map((b) => (
           <div key={b.level} style={styles.benchmarkRow}>
             <span>{b.level}</span>
-            <span>{b.range} pts</span>
+            <span>{b.range} {isLadder ? '' : 'pts'}</span>
           </div>
         ))}
 
@@ -103,30 +120,63 @@ export default function Practice() {
       <div style={styles.page}>
         <div style={styles.topRow}>
           <button style={styles.smallBtn} onClick={() => setView('rules')}>← Back</button>
-          <div style={styles.runningTotal}>{runningTotal} pts</div>
+          <div style={styles.runningTotal}>{runningTotal} {isLadder ? 'completions' : 'pts'}</div>
         </div>
 
         <h2>{selected.name}</h2>
 
-        {attempts.map((value, i) => (
-          <div key={i} style={styles.attemptRow}>
-            <div style={styles.attemptLabel}>
-              {selected.attempt_labels ? selected.attempt_labels[i] : `Attempt ${i + 1}`}
+        {isLadder ? (
+          selected.groups.map((group, g) => {
+            const per = selected.sub_attempts_per_group
+            return (
+              <div key={g} style={styles.attemptRow}>
+                <div style={styles.attemptLabel}>{group.label}</div>
+                <div style={styles.ladderSubRow}>
+                  {Array.from({ length: per }, (_, k) => {
+                    const index = g * per + k
+                    return (
+                      <div key={k}>
+                        <div style={styles.subLabel}>Putt {k + 1}</div>
+                        <div style={styles.resultButtons}>
+                          {selected.results.map((r) => (
+                            <button
+                              key={r.code}
+                              type="button"
+                              style={{ ...styles.resultBtn, ...(attempts[index] === r.code ? styles.resultBtnActive : {}) }}
+                              onClick={() => setAttempt(index, r.code)}
+                            >
+                              {r.label}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+            )
+          })
+        ) : (
+          attempts.map((value, i) => (
+            <div key={i} style={styles.attemptRow}>
+              <div style={styles.attemptLabel}>
+                {selected.attempt_labels ? selected.attempt_labels[i] : `Attempt ${i + 1}`}
+              </div>
+              <div style={styles.resultButtons}>
+                {selected.results.map((r) => (
+                  <button
+                    key={r.code}
+                    type="button"
+                    style={{ ...styles.resultBtn, ...(value === r.code ? styles.resultBtnActive : {}) }}
+                    onClick={() => setAttempt(i, r.code)}
+                  >
+                    {r.label}
+                  </button>
+                ))}
+              </div>
             </div>
-            <div style={styles.resultButtons}>
-              {selected.results.map((r) => (
-                <button
-                  key={r.code}
-                  type="button"
-                  style={{ ...styles.resultBtn, ...(value === r.code ? styles.resultBtnActive : {}) }}
-                  onClick={() => setAttempt(i, r.code)}
-                >
-                  {r.label}
-                </button>
-              ))}
-            </div>
-          </div>
-        ))}
+          ))
+        )}
 
         {error && <p style={styles.error}>{error}</p>}
 
@@ -148,18 +198,22 @@ export default function Practice() {
         <p>{selected.instructions}</p>
 
         <h3 style={styles.sectionTitle}>Scoring</h3>
-        {selected.results.map((r) => (
-          <div key={r.code} style={styles.scoringRow}>
-            <span>{r.label}</span>
-            <span style={styles.scoringPoints}>{r.points} pt{r.points === 1 ? '' : 's'}</span>
-          </div>
-        ))}
+        {isLadder ? (
+          <p>A distance counts as 1 completion only if <strong>both</strong> putts at that distance are made. Max {selected.max_points} completions ({selected.groups.length} distances).</p>
+        ) : (
+          selected.results.map((r) => (
+            <div key={r.code} style={styles.scoringRow}>
+              <span>{r.label}</span>
+              <span style={styles.scoringPoints}>{r.points} pt{r.points === 1 ? '' : 's'}</span>
+            </div>
+          ))
+        )}
 
         <h3 style={styles.sectionTitle}>Benchmarks</h3>
         {selected.benchmarks.map((b) => (
           <div key={b.level} style={styles.benchmarkRow}>
             <span>{b.level}</span>
-            <span>{b.range} pts</span>
+            <span>{b.range}{isLadder ? '' : ' pts'}</span>
           </div>
         ))}
 
@@ -270,6 +324,8 @@ const styles = {
   },
   attemptRow: { marginBottom: '1.25rem' },
   attemptLabel: { fontWeight: 600, marginBottom: '0.4rem' },
+  ladderSubRow: { display: 'flex', gap: '1.5rem', flexWrap: 'wrap' },
+  subLabel: { fontSize: '0.8rem', color: colors.textMuted, marginBottom: '0.3rem' },
   resultButtons: { display: 'flex', flexWrap: 'wrap', gap: '0.5rem' },
   resultBtn: {
     padding: '0.6rem 0.9rem',
