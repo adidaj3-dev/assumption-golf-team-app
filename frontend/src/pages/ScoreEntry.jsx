@@ -238,13 +238,26 @@ export default function ScoreEntry() {
           <button style={styles.smallBtnDanger} onClick={endRoundEarly}>End Round</button>
         </div>
 
-        <h2>Hole {hole.hole_number} — Par {hole.par}</h2>
+        <div style={styles.holeHeader}>
+          <div>
+            <h2 style={styles.holeNumber}>Hole {hole.hole_number}</h2>
+            <div style={styles.holeMeta}>
+              HDCP {hole.handicap}{hole.yardage ? ` · ${hole.yardage} yds` : ''}
+            </div>
+          </div>
+          <div style={styles.parBadge}>
+            <div style={styles.parBadgeNumber}>{hole.par}</div>
+            <div style={styles.parBadgeLabel}>PAR</div>
+          </div>
+        </div>
 
         <label style={styles.label}>Strokes</label>
         <ButtonGroup
           options={strokeOptions(hole.par)}
           value={form.strokes}
           onChange={(v) => setForm({ ...form, strokes: v })}
+          highlightSet={hole.par === 5 ? [2, 3, 4, 5] : hole.par === 3 ? [1, 2, 3] : [2, 3, 4]}
+          specialValue={hole.par === 3 ? 1 : null}
         />
 
         <label style={styles.label}>Putts</label>
@@ -353,20 +366,29 @@ export default function ScoreEntry() {
   )
 }
 
-function ButtonGroup({ options, value, onChange }) {
+function ButtonGroup({ options, value, onChange, highlightSet, specialValue }) {
   return (
     <div style={styles.buttonGroup}>
       {options.map((opt) => {
         const optValue = typeof opt === 'object' ? opt.value : opt
         const optLabel = typeof opt === 'object' ? opt.label : opt
+        const isHighlighted = highlightSet && highlightSet.includes(optValue)
+        const isSpecial = specialValue != null && optValue === specialValue
+        const isSelected = value === optValue
         return (
           <button
             key={optValue}
             type="button"
-            style={{ ...styles.groupBtn, ...(value === optValue ? styles.groupBtnActive : {}) }}
+            style={{
+              ...styles.groupBtn,
+              ...(isHighlighted ? styles.groupBtnHighlight : {}),
+              ...(isSpecial ? styles.groupBtnSpecial : {}),
+              ...(isSelected ? styles.groupBtnActive : {}),
+              ...(isSelected && isSpecial ? styles.groupBtnSpecialActive : {}),
+            }}
             onClick={() => onChange(optValue)}
           >
-            {optLabel}
+            {isSpecial ? `★ ${optLabel}` : optLabel}
           </button>
         )
       })}
@@ -397,6 +419,24 @@ function ToggleRow({ label, value, onChange }) {
 }
 
 const styles = {
+  holeHeader: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: '0.5rem',
+  },
+  holeNumber: { margin: 0 },
+  holeMeta: { color: '#5a6672', fontSize: '0.9rem', marginTop: '0.15rem' },
+  parBadge: {
+    background: '#004b87',
+    color: 'white',
+    borderRadius: '0.6rem',
+    padding: '0.5rem 1.1rem',
+    textAlign: 'center',
+    minWidth: '3.5rem',
+  },
+  parBadgeNumber: { fontSize: '1.8rem', fontWeight: 'bold', lineHeight: 1 },
+  parBadgeLabel: { fontSize: '0.65rem', letterSpacing: '0.08em', marginTop: '0.1rem' },
   page: {
     fontFamily: 'system-ui, sans-serif',
     padding: '1.5rem',
@@ -432,10 +472,33 @@ const styles = {
     borderRadius: '0.5rem',
     background: 'white',
   },
+  groupBtnHighlight: {
+    minWidth: '4rem',
+    padding: '1rem',
+    fontSize: '1.4rem',
+    fontWeight: 'bold',
+    border: '2px solid #004b87',
+    color: '#004b87',
+  },
   groupBtnActive: {
     background: '#004b87',
     color: 'white',
     borderColor: '#004b87',
+  },
+  groupBtnSpecial: {
+    minWidth: '4.5rem',
+    padding: '1.1rem',
+    fontSize: '1.6rem',
+    fontWeight: 'bold',
+    border: '2px solid #d4af37',
+    color: '#8a6d00',
+    background: '#fff8e1',
+    boxShadow: '0 2px 8px rgba(212,175,55,0.45)',
+  },
+  groupBtnSpecialActive: {
+    background: '#d4af37',
+    color: 'white',
+    borderColor: '#b8952c',
   },
   toggleRow: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '1rem' },
   toggleBtn: { padding: '0.5rem 1rem', marginLeft: '0.5rem', border: '1px solid #ccc', borderRadius: '0.4rem' },
