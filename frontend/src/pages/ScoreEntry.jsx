@@ -15,6 +15,18 @@ function strokeOptions(par) {
   return range(2, 9) // par 5
 }
 
+// Classifies a stroke count relative to par, used to color-code the
+// strokes buttons (blue par, red birdie/eagle, gold ace, purple albatross).
+function scoreTier(strokes, par) {
+  if (strokes === 1) return 'ace'
+  const relative = strokes - par
+  if (relative === -3) return 'albatross'
+  if (relative === -2) return 'eagle'
+  if (relative === -1) return 'birdie'
+  if (relative === 0) return 'par'
+  return null
+}
+
 function range(start, end) {
   const out = []
   for (let i = start; i <= end; i++) out.push(i)
@@ -256,13 +268,13 @@ export default function ScoreEntry() {
           options={strokeOptions(hole.par)}
           value={form.strokes}
           onChange={(v) => setForm({ ...form, strokes: v })}
-          highlightSet={hole.par === 5 ? [2, 3, 4, 5] : hole.par === 3 ? [1, 2, 3] : [2, 3, 4]}
-          specialValue={hole.par === 3 ? 1 : null}
+          tierFn={(v) => scoreTier(v, hole.par)}
         />
 
         <label style={styles.label}>Putts</label>
         <ButtonGroup
           options={[
+            { value: 0, label: '0' },
             { value: 1, label: '1' },
             { value: 2, label: '2' },
             { value: 3, label: '3' },
@@ -366,14 +378,26 @@ export default function ScoreEntry() {
   )
 }
 
-function ButtonGroup({ options, value, onChange, highlightSet, specialValue }) {
+const TIER_STYLES = {
+  par: 'groupBtnPar',
+  birdie: 'groupBtnRed',
+  eagle: 'groupBtnRed',
+  ace: 'groupBtnSpecial',
+  albatross: 'groupBtnAlbatross',
+}
+
+const TIER_ICONS = {
+  ace: '★ ',
+  albatross: '◆ ',
+}
+
+function ButtonGroup({ options, value, onChange, tierFn }) {
   return (
     <div style={styles.buttonGroup}>
       {options.map((opt) => {
         const optValue = typeof opt === 'object' ? opt.value : opt
         const optLabel = typeof opt === 'object' ? opt.label : opt
-        const isHighlighted = highlightSet && highlightSet.includes(optValue)
-        const isSpecial = specialValue != null && optValue === specialValue
+        const tier = tierFn ? tierFn(optValue) : null
         const isSelected = value === optValue
         return (
           <button
@@ -381,14 +405,14 @@ function ButtonGroup({ options, value, onChange, highlightSet, specialValue }) {
             type="button"
             style={{
               ...styles.groupBtn,
-              ...(isHighlighted ? styles.groupBtnHighlight : {}),
-              ...(isSpecial ? styles.groupBtnSpecial : {}),
-              ...(isSelected ? styles.groupBtnActive : {}),
-              ...(isSelected && isSpecial ? styles.groupBtnSpecialActive : {}),
+              ...(tier ? styles.groupBtnEmph : {}),
+              ...(tier ? styles[TIER_STYLES[tier]] : {}),
+              ...(isSelected && !tier ? styles.groupBtnActive : {}),
+              ...(isSelected && tier ? styles.groupBtnTierSelected : {}),
             }}
             onClick={() => onChange(optValue)}
           >
-            {isSpecial ? `★ ${optLabel}` : optLabel}
+            {TIER_ICONS[tier] || ''}{optLabel}
           </button>
         )
       })}
@@ -472,33 +496,49 @@ const styles = {
     borderRadius: '0.5rem',
     background: 'white',
   },
-  groupBtnHighlight: {
+  groupBtnEmph: {
     minWidth: '4rem',
     padding: '1rem',
     fontSize: '1.4rem',
     fontWeight: 'bold',
-    border: '2px solid #004b87',
-    color: '#004b87',
   },
   groupBtnActive: {
     background: '#004b87',
     color: 'white',
     borderColor: '#004b87',
   },
+  // Permanent tier colors — these apply whether or not the button is
+  // selected; a separate ring (groupBtnTierSelected) shows the actual pick.
+  groupBtnPar: {
+    background: '#004b87',
+    color: 'white',
+    borderColor: '#004b87',
+  },
+  groupBtnRed: {
+    background: '#c62828',
+    color: 'white',
+    borderColor: '#c62828',
+  },
   groupBtnSpecial: {
     minWidth: '4.5rem',
     padding: '1.1rem',
     fontSize: '1.6rem',
-    fontWeight: 'bold',
     border: '2px solid #d4af37',
     color: '#8a6d00',
     background: '#fff8e1',
     boxShadow: '0 2px 8px rgba(212,175,55,0.45)',
   },
-  groupBtnSpecialActive: {
-    background: '#d4af37',
+  groupBtnAlbatross: {
+    minWidth: '4.5rem',
+    padding: '1.1rem',
+    fontSize: '1.6rem',
+    background: '#6a1b9a',
     color: 'white',
-    borderColor: '#b8952c',
+    borderColor: '#4a148c',
+    boxShadow: '0 2px 8px rgba(106,27,154,0.45)',
+  },
+  groupBtnTierSelected: {
+    boxShadow: 'inset 0 0 0 3px rgba(0,0,0,0.4)',
   },
   toggleRow: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '1rem' },
   toggleBtn: { padding: '0.5rem 1rem', marginLeft: '0.5rem', border: '1px solid #ccc', borderRadius: '0.4rem' },
