@@ -585,6 +585,123 @@ COMBINE_DEFINITIONS = {
             {"level": "PGA", "range": "30-36"},
         ],
     },
+    "ladder_distance_control": {
+        "name": "Ladder Distance Control",
+        "category": "Short Game",
+        "objective": "Improve distance control with wedges.",
+        "instructions": "Hit 5 shots each to targets at 20, 30, 40, and 50 yards (20 total).",
+        "scoring_type": "sum_points",
+        "attempts": 20,
+        "attempt_labels": [f"{d} yds — Shot {i}" for d in (20, 30, 40, 50) for i in range(1, 6)],
+        "results": [
+            {"code": "inside3", "label": "Inside 3 ft", "points": 3},
+            {"code": "inside6", "label": "Inside 6 ft", "points": 2},
+            {"code": "inside10", "label": "Inside 10 ft", "points": 1},
+            {"code": "outside10", "label": "Outside 10 ft", "points": 0},
+        ],
+        "max_points": 60,
+        "benchmarks": [
+            {"level": "D1", "range": "18-24"},
+            {"level": "PGA", "range": "24-30"},
+        ],
+    },
+    "up_and_down_gauntlet": {
+        "name": "Up-and-Down Gauntlet",
+        "category": "Short Game",
+        "objective": "Improve consistency around the green.",
+        "instructions": "Play 9 different short game shots. Score each attempt.",
+        "scoring_type": "sum_points",
+        "attempts": 9,
+        "attempt_labels": None,
+        "results": [
+            {"code": "updown", "label": "Up-and-Down", "points": 1},
+            {"code": "miss", "label": "Miss", "points": 0},
+        ],
+        "max_points": 9,
+        "benchmarks": [
+            {"level": "D1", "range": "5-7"},
+            {"level": "PGA", "range": "7-9"},
+        ],
+    },
+    "wedge_combine": {
+        "name": "Wedge Combine",
+        "category": "Wedges",
+        "objective": "Improve wedge distance control from key scoring distances.",
+        "instructions": "Hit 10 shots each from 50, 75, and 100 yards (30 total).",
+        "scoring_type": "sum_points",
+        "attempts": 30,
+        "attempt_labels": [f"{d} yds — Shot {i}" for d in (50, 75, 100) for i in range(1, 11)],
+        "results": [
+            {"code": "inside5", "label": "Inside 5 ft", "points": 3},
+            {"code": "inside10", "label": "Inside 10 ft", "points": 2},
+            {"code": "inside20", "label": "Inside 20 ft", "points": 1},
+            {"code": "outside20", "label": "Outside 20 ft", "points": 0},
+        ],
+        "max_points": 90,
+        "benchmarks": [
+            {"level": "D2", "range": "35-50"},
+            {"level": "D1", "range": "45-60"},
+            {"level": "PGA", "range": "60-75"},
+        ],
+    },
+    "trajectory_triathlon": {
+        "name": "Trajectory Triathlon Combine",
+        "category": "Any Club",
+        "objective": "Master trajectory control.",
+        "instructions": "Hit 5 shots each with low, medium, and high trajectories (15 total).",
+        "scoring_type": "sum_points",
+        "attempts": 15,
+        "attempt_labels": [f"{traj} — Shot {i}" for traj in ("Low", "Medium", "High") for i in range(1, 6)],
+        "results": [
+            {"code": "hit", "label": "Target Hit", "points": 2},
+            {"code": "near", "label": "Near Miss", "points": 1},
+            {"code": "miss", "label": "Miss", "points": 0},
+        ],
+        "max_points": 30,
+        "benchmarks": [
+            {"level": "D1", "range": "18-24"},
+            {"level": "PGA", "range": "24-30"},
+        ],
+    },
+    "mid_iron_college_combine": {
+        "name": "College Combine (6-Iron & 4-Iron)",
+        "category": "Mid Irons / Woods",
+        "objective": "Improve mid-iron accuracy.",
+        "instructions": "Hit 10 shots each with 6-iron and 4-iron (20 total).",
+        "scoring_type": "sum_points",
+        "attempts": 20,
+        "attempt_labels": [f"{club} — Shot {i}" for club in ("6-Iron", "4-Iron") for i in range(1, 11)],
+        "results": [
+            {"code": "inside10", "label": "Inside 10 ft", "points": 3},
+            {"code": "inside20", "label": "Inside 20 ft", "points": 2},
+            {"code": "inside30", "label": "Inside 30 ft", "points": 1},
+            {"code": "outside30", "label": "Outside 30 ft", "points": 0},
+        ],
+        "max_points": 60,
+        "benchmarks": [
+            {"level": "D1", "range": "30-40"},
+            {"level": "PGA", "range": "40-50"},
+        ],
+    },
+    "fairway_finder_challenge": {
+        "name": "Fairway Finder Challenge",
+        "category": "Mid Irons / Woods",
+        "objective": "Improve fairway accuracy.",
+        "instructions": "Hit 10 shots with fairway wood.",
+        "scoring_type": "sum_points",
+        "attempts": 10,
+        "attempt_labels": None,
+        "results": [
+            {"code": "fairway", "label": "Fairway Hit", "points": 2},
+            {"code": "near", "label": "Near Fairway", "points": 1},
+            {"code": "miss", "label": "Miss", "points": 0},
+        ],
+        "max_points": 20,
+        "benchmarks": [
+            {"level": "D1", "range": "12-16"},
+            {"level": "PGA", "range": "16-20"},
+        ],
+    },
 }
 
 
@@ -667,3 +784,4 @@ def player_combines(player_id: UUID, combine_type: Optional[str] = None, player=
         query = query.eq("combine_type", combine_type)
 
     return query.execute().data
+
