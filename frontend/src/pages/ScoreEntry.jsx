@@ -24,7 +24,16 @@ function scoreTier(strokes, par) {
   if (relative === -2) return 'eagle'
   if (relative === -1) return 'birdie'
   if (relative === 0) return 'par'
-  return null
+  return 'over' // bogey or worse
+}
+
+const TIER_COLORS = {
+  par: '#004b87',
+  birdie: '#c62828',
+  eagle: '#c62828',
+  albatross: '#6a1b9a',
+  ace: '#d4af37',
+  over: '#111111',
 }
 
 function range(start, end) {
@@ -378,18 +387,12 @@ export default function ScoreEntry() {
   )
 }
 
-const TIER_STYLES = {
-  par: 'groupBtnPar',
-  birdie: 'groupBtnRed',
-  eagle: 'groupBtnRed',
-  ace: 'groupBtnSpecial',
-  albatross: 'groupBtnAlbatross',
-}
-
 const TIER_ICONS = {
   ace: '★ ',
   albatross: '◆ ',
 }
+
+const GLOW_TIERS = new Set(['ace', 'albatross']) // extra size + glow to stand out further
 
 function ButtonGroup({ options, value, onChange, tierFn }) {
   return (
@@ -399,6 +402,20 @@ function ButtonGroup({ options, value, onChange, tierFn }) {
         const optLabel = typeof opt === 'object' ? opt.label : opt
         const tier = tierFn ? tierFn(optValue) : null
         const isSelected = value === optValue
+        const tierColor = tier ? TIER_COLORS[tier] : null
+
+        // Unselected tiered button: solid color, white text.
+        // Selected tiered button: flips to white background, colored text —
+        // makes the chosen value obvious at a glance.
+        const tierColorStyle = tier
+          ? {
+              background: isSelected ? 'white' : tierColor,
+              color: isSelected ? tierColor : 'white',
+              borderColor: tierColor,
+              borderWidth: '2px',
+            }
+          : {}
+
         return (
           <button
             key={optValue}
@@ -406,9 +423,9 @@ function ButtonGroup({ options, value, onChange, tierFn }) {
             style={{
               ...styles.groupBtn,
               ...(tier ? styles.groupBtnEmph : {}),
-              ...(tier ? styles[TIER_STYLES[tier]] : {}),
+              ...(tier && GLOW_TIERS.has(tier) ? styles.groupBtnGlow : {}),
+              ...tierColorStyle,
               ...(isSelected && !tier ? styles.groupBtnActive : {}),
-              ...(isSelected && tier ? styles.groupBtnTierSelected : {}),
             }}
             onClick={() => onChange(optValue)}
           >
@@ -507,38 +524,13 @@ const styles = {
     color: 'white',
     borderColor: '#004b87',
   },
-  // Permanent tier colors — these apply whether or not the button is
-  // selected; a separate ring (groupBtnTierSelected) shows the actual pick.
-  groupBtnPar: {
-    background: '#004b87',
-    color: 'white',
-    borderColor: '#004b87',
-  },
-  groupBtnRed: {
-    background: '#c62828',
-    color: 'white',
-    borderColor: '#c62828',
-  },
-  groupBtnSpecial: {
+  // Extra size + glow for ace/albatross on top of the standard tier coloring
+  // computed inline in ButtonGroup.
+  groupBtnGlow: {
     minWidth: '4.5rem',
     padding: '1.1rem',
     fontSize: '1.6rem',
-    border: '2px solid #d4af37',
-    color: '#8a6d00',
-    background: '#fff8e1',
-    boxShadow: '0 2px 8px rgba(212,175,55,0.45)',
-  },
-  groupBtnAlbatross: {
-    minWidth: '4.5rem',
-    padding: '1.1rem',
-    fontSize: '1.6rem',
-    background: '#6a1b9a',
-    color: 'white',
-    borderColor: '#4a148c',
-    boxShadow: '0 2px 8px rgba(106,27,154,0.45)',
-  },
-  groupBtnTierSelected: {
-    boxShadow: 'inset 0 0 0 3px rgba(0,0,0,0.4)',
+    boxShadow: '0 2px 8px rgba(0,0,0,0.3)',
   },
   toggleRow: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '1rem' },
   toggleBtn: { padding: '0.5rem 1rem', marginLeft: '0.5rem', border: '1px solid #ccc', borderRadius: '0.4rem' },
