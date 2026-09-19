@@ -707,6 +707,9 @@ COMBINE_DEFINITIONS = {
 
 class CombineSubmitIn(BaseModel):
     attempts: list[str]  # result codes, one per attempt, in order
+    player_id: Optional[UUID] = None  # who this combine is FOR — defaults to
+    # whoever is logged in, but any teammate can log it on someone else's
+    # behalf (e.g. practicing in pairs and one person runs the phone).
 
 
 @app.get("/combines")
@@ -756,8 +759,18 @@ def submit_combine(slug: str, submission: CombineSubmitIn, player=Depends(get_cu
         points_by_code = {r["code"]: r["points"] for r in definition["results"]}
         total_points = sum(points_by_code[code] for code in submission.attempts)
 
+    # Who this combine is actually FOR — defaults to whoever is logged in,
+    # but can be a teammate (validated as a real player) if logged on their
+    # behalf during group practice.
+    target_player_id = player["id"]
+    if submission.player_id is not None:
+        target = supabase.table("players").select("id").eq("id", str(submission.player_id)).single().execute().data
+        if not target:
+            raise HTTPException(400, "Selected player not found")
+        target_player_id = str(submission.player_id)
+
     row = supabase.table("combine_sessions").insert({
-        "player_id": player["id"],
+        "player_id": target_player_id,
         "combine_type": slug,
         "attempts": submission.attempts,
         "total_points": total_points,
@@ -785,3 +798,165 @@ def player_combines(player_id: UUID, combine_type: Optional[str] = None, player=
 
     return query.execute().data
 
+
+# ---------------------------------------------------------------------------
+# Team roster, live rounds, scorecards, and combine summaries
+# ---------------------------------------------------------------------------
+
+@app.get("/team/players")
+def team_players(player=Depends(get_current_player)):
+    """Full roster — any signed-in player can call this (not coach-only).
+    Used for the 'who is this combine for' picker so teammates can log
+    scores for each other during group practice."""
+    return (
+        supabase.table("players")
+        .select("id, full_name, role")
+        .order("full_name")
+        .execute()
+        .data
+    )
+
+
+@app.get("/coach/live-rounds")
+def live_rounds(player=Depends(get_current_player)):
+    """Coach-only: every round currently in progress (not yet completed),
+    with a live running score — for watching practice/tournament rounds
+    hole-by-hole as they happen."""
+    if player["role"] != "coach":
+        raise HTTPException(403, "Coach access only")
+
+    rounds = (
+        supabase.table("rounds")
+        .select("id, started_at, players(full_name), courses(name)")
+        .is_("completed_at", "null")
+        .execute()
+        .data
+    )
+
+    results = []
+    for r in rounds:
+        scores = (
+            supabase.table("hole_scores")
+            .select("strokes, holes(hole_number, par)")
+            .eq("round_id", r["id"])
+            .execute()
+            .data
+        )
+        total_strokes = sum(s["strokes"] for s in scores)
+        total_par = sum(s["holes"]["par"] for s in scores)
+        last_hole = max((s["holes"]["hole_number"] for s in scores), default=0)
+        results.append({
+            "round_id": r["id"],
+            "player_name": r["players"]["full_name"],
+            "course_name": r["courses"]["name"] if r["courses"] else "Unknown course",
+            "started_at": r["started_at"],
+            "holes_played": len(scores),
+            "current_hole": last_hole + 1 if last_hole < 18 else last_hole,
+            "score_to_par": (total_strokes - total_par) if scores else None,
+        })
+
+    results.sort(key=lambda x: (x["score_to_par"] is None, x["score_to_par"]))
+    return results
+
+
+@app.get("/rounds/{round_id}/scorecard")
+def round_scorecard(round_id: UUID, player=Depends(get_current_player)):
+    """Full hole-by-hole detail for a round — the actual scorecard, not just
+    the aggregate summary from /rounds/{id}/summary."""
+    round_row = supabase.table("rounds").select("*").eq("id", str(round_id)).single().execute().data
+    if not round_row:
+        raise HTTPException(404, "Round not found")
+    if round_row["player_id"] != player["id"] and player["role"] != "coach":
+        raise HTTPException(403, "Not authorized")
+
+    course = supabase.table("courses").select("name").eq("id", round_row["course_id"]).single().execute().data
+    all_holes = (
+        supabase.table("holes")
+        .select("id, hole_number, par, handicap, yardage")
+        .eq("course_id", round_row["course_id"])
+        .order("hole_number")
+        .execute()
+        .data
+    )
+    scores = (
+        supabase.table("hole_scores")
+        .select("hole_id, strokes, putts, fairway_hit, gir")
+        .eq("round_id", str(round_id))
+        .execute()
+        .data
+    )
+    scores_by_hole = {s["hole_id"]: s for s in scores}
+
+    holes_out = []
+    for h in all_holes:
+        s = scores_by_hole.get(h["id"])
+        holes_out.append({
+            "hole_number": h["hole_number"],
+            "par": h["par"],
+            "handicap": h["handicap"],
+            "yardage": h["yardage"],
+            "strokes": s["strokes"] if s else None,
+            "putts": s["putts"] if s else None,
+            "fairway_hit": s["fairway_hit"] if s else None,
+            "gir": s["gir"] if s else None,
+        })
+
+    return {
+        "course_name": course["name"] if course else "Unknown course",
+        "started_at": round_row["started_at"],
+        "completed_at": round_row["completed_at"],
+        "holes": holes_out,
+    }
+
+
+@app.get("/players/{player_id}/combines/summary")
+def player_combines_summary(player_id: UUID, player=Depends(get_current_player)):
+    """Every combine type this player has attempted, with their average and
+    best score plus which benchmark tier (D2/D1/PGA) their average falls
+    into — the data behind the coach's Combines tab."""
+    if player["id"] != str(player_id) and player["role"] != "coach":
+        raise HTTPException(403, "Not authorized")
+
+    sessions = (
+        supabase.table("combine_sessions")
+        .select("combine_type, total_points, completed_at")
+        .eq("player_id", str(player_id))
+        .execute()
+        .data
+    )
+
+    by_type = {}
+    for s in sessions:
+        by_type.setdefault(s["combine_type"], []).append(s)
+
+    results = []
+    for slug, defn in COMBINE_DEFINITIONS.items():
+        attempts_list = by_type.get(slug, [])
+        if not attempts_list:
+            results.append({
+                "slug": slug,
+                "name": defn["name"],
+                "category": defn["category"],
+                "max_points": defn["max_points"],
+                "benchmarks": defn["benchmarks"],
+                "attempts_count": 0,
+                "average": None,
+                "best": None,
+                "last_completed_at": None,
+            })
+            continue
+
+        points = [a["total_points"] for a in attempts_list]
+        results.append({
+            "slug": slug,
+            "name": defn["name"],
+            "category": defn["category"],
+            "max_points": defn["max_points"],
+            "benchmarks": defn["benchmarks"],
+            "attempts_count": len(points),
+            "average": round(sum(points) / len(points), 1),
+            "best": max(points),
+            "last_completed_at": max(a["completed_at"] for a in attempts_list),
+        })
+
+    return results

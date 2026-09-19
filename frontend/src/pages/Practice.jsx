@@ -19,8 +19,10 @@ async function authedFetch(path, options = {}) {
   return res.json()
 }
 
-export default function Practice() {
-  const [view, setView] = useState('list') // 'list', 'rules', 'entry', 'result'
+export default function Practice({ player }) {
+  const [view, setView] = useState('selectPlayer') // 'selectPlayer', 'list', 'rules', 'entry', 'result'
+  const [teamPlayers, setTeamPlayers] = useState(null)
+  const [targetPlayer, setTargetPlayer] = useState(null)
   const [combines, setCombines] = useState(null)
   const [selected, setSelected] = useState(null) // combine definition
   const [attempts, setAttempts] = useState([])
@@ -28,8 +30,14 @@ export default function Practice() {
   const [error, setError] = useState(null)
 
   useEffect(() => {
+    authedFetch('/team/players').then(setTeamPlayers).catch((err) => setError(err.message))
     authedFetch('/combines').then(setCombines).catch((err) => setError(err.message))
   }, [])
+
+  function pickTargetPlayer(p) {
+    setTargetPlayer(p)
+    setView('list')
+  }
 
   function openRules(combine) {
     setSelected(combine)
@@ -56,7 +64,7 @@ export default function Practice() {
     try {
       const res = await authedFetch(`/combines/${selected.slug}/submit`, {
         method: 'POST',
-        body: JSON.stringify({ attempts }),
+        body: JSON.stringify({ attempts, player_id: targetPlayer.id }),
       })
       setResult(res)
       setView('result')
@@ -88,6 +96,32 @@ export default function Practice() {
       <div style={styles.page}>
         <p style={styles.error}>{error}</p>
         <button style={styles.linkBtn} onClick={() => { setError(null); setView('list') }}>← Back</button>
+      </div>
+    )
+  }
+
+  if (view === 'selectPlayer') {
+    return (
+      <div style={styles.page}>
+        <h2>Who's practicing?</h2>
+        <p style={styles.objective}>
+          Pick the player this combine is for. Practicing in pairs? Whoever has the phone can log for their partner — select their name instead of your own.
+        </p>
+        {!teamPlayers ? (
+          <p>Loading…</p>
+        ) : (
+          teamPlayers.map((p) => (
+            <button
+              key={p.id}
+              style={{ ...styles.combineCard, ...(p.id === player?.id ? styles.selfCard : {}) }}
+              onClick={() => pickTargetPlayer(p)}
+            >
+              <div style={styles.combineName}>
+                {p.full_name}{p.id === player?.id ? ' (Me)' : ''}
+              </div>
+            </button>
+          ))
+        )}
       </div>
     )
   }
@@ -229,6 +263,10 @@ export default function Practice() {
 
   return (
     <div style={styles.page}>
+      <div style={styles.loggingForBar}>
+        <span>Logging for: <strong>{targetPlayer?.full_name}</strong></span>
+        <button style={styles.changeBtn} onClick={() => setView('selectPlayer')}>Change</button>
+      </div>
       <h2>Practice</h2>
       {categories.map((cat) => (
         <div key={cat}>
@@ -270,6 +308,26 @@ const styles = {
   },
   combineName: { fontWeight: 600, color: colors.primary },
   combineObjective: { fontSize: '0.85rem', color: colors.textMuted, marginTop: '0.2rem' },
+  selfCard: { border: `2px solid ${colors.primary}` },
+  loggingForBar: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    background: colors.grayLight,
+    borderRadius: '0.5rem',
+    padding: '0.6rem 0.9rem',
+    marginBottom: '1rem',
+    fontSize: '0.85rem',
+  },
+  changeBtn: {
+    background: 'none',
+    border: 'none',
+    color: colors.primary,
+    textDecoration: 'underline',
+    fontSize: '0.85rem',
+    cursor: 'pointer',
+    padding: 0,
+  },
   scoringRow: {
     display: 'flex',
     justifyContent: 'space-between',

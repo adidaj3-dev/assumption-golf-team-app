@@ -6,6 +6,7 @@ import RoundSummary from './RoundSummary.jsx'
 import Stats from './Stats.jsx'
 import CoachDashboard from './CoachDashboard.jsx'
 import Practice from './Practice.jsx'
+import CombinesDashboard from './CombinesDashboard.jsx'
 
 const API_BASE = import.meta.env.VITE_API_BASE
 
@@ -343,11 +344,20 @@ export default function ScoreEntry() {
             Team
           </button>
         )}
+        {player.role === 'coach' && (
+          <button
+            style={{ ...styles.tabBtn, ...(tab === 'combines' ? styles.tabBtnActive : {}) }}
+            onClick={() => setTab('combines')}
+          >
+            Combines
+          </button>
+        )}
       </div>
 
       {tab === 'stats' && <Stats player={player} />}
-      {tab === 'practice' && <Practice />}
+      {tab === 'practice' && <Practice player={player} />}
       {tab === 'team' && player.role === 'coach' && <CoachDashboard />}
+      {tab === 'combines' && player.role === 'coach' && <CombinesDashboard />}
       {tab === 'play' && (
         <div style={styles.page}>
           <h2>Start a round</h2>
@@ -571,6 +581,7 @@ const styles = {
   error: { color: '#b00020', marginTop: '0.75rem' },
   tabBar: {
     display: 'flex',
+    flexWrap: 'wrap',
     maxWidth: 420,
     margin: '0 auto',
     borderBottom: '1px solid #ddd',

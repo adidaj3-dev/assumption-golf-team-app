@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { supabase } from '../supabaseClient.js'
+import Scorecard from './Scorecard.jsx'
 
 const API_BASE = import.meta.env.VITE_API_BASE
 
@@ -13,17 +14,34 @@ async function authedFetch(path) {
   return res.json()
 }
 
+const CUT_LINE = 5
+
 export default function CoachDashboard() {
-  const [view, setView] = useState('players') // 'players', 'rounds', or 'roundDetail'
+  const [view, setView] = useState('players') // 'players', 'live', 'rounds', 'scorecard'
   const [players, setPlayers] = useState(null)
+  const [live, setLive] = useState(null)
   const [selectedPlayer, setSelectedPlayer] = useState(null)
   const [playerRounds, setPlayerRounds] = useState(null)
-  const [roundDetail, setRoundDetail] = useState(null)
+  const [selectedRoundId, setSelectedRoundId] = useState(null)
   const [error, setError] = useState(null)
 
   useEffect(() => {
     authedFetch('/coach/team-stats').then(setPlayers).catch((err) => setError(err.message))
   }, [])
+
+  function openLive() {
+    setError(null)
+    setView('live')
+    authedFetch('/coach/live-rounds').then(setLive).catch((err) => setError(err.message))
+  }
+
+  useEffect(() => {
+    if (view !== 'live') return
+    const interval = setInterval(() => {
+      authedFetch('/coach/live-rounds').then(setLive).catch(() => {})
+    }, 10000)
+    return () => clearInterval(interval)
+  }, [view])
 
   function openPlayer(p) {
     setSelectedPlayer(p)
@@ -36,12 +54,8 @@ export default function CoachDashboard() {
   }
 
   function openRound(roundId) {
-    setRoundDetail(null)
-    setError(null)
-    setView('roundDetail')
-    authedFetch(`/rounds/${roundId}/summary`)
-      .then(setRoundDetail)
-      .catch((err) => setError(err.message))
+    setSelectedRoundId(roundId)
+    setView('scorecard')
   }
 
   if (error) {
@@ -53,32 +67,8 @@ export default function CoachDashboard() {
     )
   }
 
-  if (view === 'roundDetail') {
-    return (
-      <div style={styles.page}>
-        <button style={styles.linkBtn} onClick={() => setView('rounds')}>← Back to {selectedPlayer.full_name}'s rounds</button>
-        {!roundDetail ? (
-          <p>Loading…</p>
-        ) : (
-          <>
-            <h2>Round Detail</h2>
-            <p style={styles.subtitle}>
-              {new Date(roundDetail.started_at).toLocaleDateString()} · {roundDetail.completed ? 'Completed' : 'In progress'}
-            </p>
-            <div style={styles.grid}>
-              <Stat label="Score" value={formatToPar(roundDetail.score_to_par)} />
-              <Stat label="Strokes" value={roundDetail.total_strokes} />
-              <Stat label="Putts" value={roundDetail.putts} />
-              <Stat label="Holes Played" value={roundDetail.holes_played} />
-              <Stat label="GIR" value={`${roundDetail.gir_count}/${roundDetail.holes_played} (${roundDetail.gir_pct}%)`} />
-              {roundDetail.fairway_count !== null && (
-                <Stat label="Fairways" value={`${roundDetail.fairway_count} (${roundDetail.fairway_pct}%)`} />
-              )}
-            </div>
-          </>
-        )}
-      </div>
-    )
+  if (view === 'scorecard') {
+    return <Scorecard roundId={selectedRoundId} onBack={() => setView('rounds')} />
   }
 
   if (view === 'rounds') {
@@ -108,38 +98,94 @@ export default function CoachDashboard() {
     )
   }
 
+  if (view === 'live') {
+    return (
+      <div style={styles.page}>
+        <button style={styles.linkBtn} onClick={() => setView('players')}>← Back to team</button>
+        <h2>Live Rounds</h2>
+        <p style={styles.subtitle}>Updates every 10 seconds</p>
+
+        {!live ? (
+          <p>Loading…</p>
+        ) : live.length === 0 ? (
+          <p>No one is currently on the course.</p>
+        ) : (
+          live.map((r) => (
+            <div key={r.round_id} style={styles.roundRow}>
+              <div>
+                <div style={styles.roundCourse}>{r.player_name}</div>
+                <div style={styles.roundDate}>{r.course_name} · Hole {r.current_hole}</div>
+              </div>
+              <div style={styles.roundScore}>{formatToPar(r.score_to_par)}</div>
+            </div>
+          ))
+        )}
+      </div>
+    )
+  }
+
   // view === 'players'
   if (!players) return <div style={styles.page}><p>Loading…</p></div>
 
+  const ranked = [...players].sort((a, b) => {
+    if (!a.rounds_played && !b.rounds_played) return 0
+    if (!a.rounds_played) return 1
+    if (!b.rounds_played) return -1
+    return a.scoring_avg_to_par - b.scoring_avg_to_par
+  })
+
   return (
     <div style={styles.page}>
-      <h2>Team Stats</h2>
-      <p style={styles.subtitle}>{players.length} player{players.length === 1 ? '' : 's'} · tap a name for full round history</p>
+      <div style={styles.headerRow}>
+        <h2 style={{ margin: 0 }}>Team Stats</h2>
+        <button style={styles.liveBtn} onClick={openLive}>● Live Rounds</button>
+      </div>
+      <p style={styles.subtitle}>{players.length} player{players.length === 1 ? '' : 's'}, ranked by scoring average · tap a name for full history</p>
 
-      {players.map((p) => (
-        <button key={p.player_id} style={styles.playerCard} onClick={() => openPlayer(p)}>
-          <div style={styles.playerName}>{p.full_name}</div>
-
-          {!p.rounds_played ? (
-            <p style={styles.noRounds}>No completed rounds yet</p>
-          ) : (
-            <>
-              <div style={styles.statsRow}>
-                <Stat label="Rounds" value={p.rounds_played} />
-                <Stat label="Scoring Avg" value={formatToPar(p.scoring_avg_to_par)} />
-                <Stat label="GIR %" value={p.gir_pct != null ? `${p.gir_pct}%` : '—'} />
-                <Stat label="Fairways %" value={p.fairway_pct != null ? `${p.fairway_pct}%` : '—'} />
-                <Stat label="Putts/Rd" value={p.putts_per_round} />
+      {ranked.map((p, i) => {
+        const rank = i + 1
+        const showCutLine = rank === CUT_LINE + 1 && ranked.slice(0, i).some((x) => x.rounds_played)
+        return (
+          <div key={p.player_id}>
+            {showCutLine && (
+              <div style={styles.cutLine}>
+                <span>CUT LINE</span>
               </div>
-              {p.last_round && (
-                <div style={styles.lastRound}>
-                  Last round: Front {formatToPar(p.last_round.front9_to_par)} / Back {formatToPar(p.last_round.back9_to_par)} / Total {formatToPar(p.last_round.total_to_par)}
-                </div>
+            )}
+            <button
+              style={{
+                ...styles.playerCard,
+                ...(rank > CUT_LINE && p.rounds_played ? styles.playerCardBelowCut : {}),
+              }}
+              onClick={() => openPlayer(p)}
+            >
+              <div style={styles.playerHeader}>
+                <div style={{ ...styles.rankBadge, ...(rank <= CUT_LINE ? styles.rankBadgeTop : {}) }}>{rank}</div>
+                <div style={styles.playerName}>{p.full_name}</div>
+              </div>
+
+              {!p.rounds_played ? (
+                <p style={styles.noRounds}>No completed rounds yet</p>
+              ) : (
+                <>
+                  <div style={styles.statsRow}>
+                    <Stat label="Rounds" value={p.rounds_played} />
+                    <Stat label="Scoring Avg" value={formatToPar(p.scoring_avg_to_par)} />
+                    <Stat label="GIR %" value={p.gir_pct != null ? `${p.gir_pct}%` : '—'} />
+                    <Stat label="Fairways %" value={p.fairway_pct != null ? `${p.fairway_pct}%` : '—'} />
+                    <Stat label="Putts/Rd" value={p.putts_per_round} />
+                  </div>
+                  {p.last_round && (
+                    <div style={styles.lastRound}>
+                      Last round: Front {formatToPar(p.last_round.front9_to_par)} / Back {formatToPar(p.last_round.back9_to_par)} / Total {formatToPar(p.last_round.total_to_par)}
+                    </div>
+                  )}
+                </>
               )}
-            </>
-          )}
-        </button>
-      ))}
+            </button>
+          </div>
+        )
+      })}
     </div>
   )
 }
@@ -169,8 +215,27 @@ const styles = {
     borderRadius: '0.75rem',
     boxShadow: '0 2px 10px rgba(0,0,0,0.06)',
   },
-  subtitle: { color: '#666', marginTop: '-0.5rem', marginBottom: '1.5rem' },
-  grid: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem', marginTop: '1rem' },
+  headerRow: { display: 'flex', justifyContent: 'space-between', alignItems: 'center' },
+  liveBtn: {
+    padding: '0.5rem 0.9rem',
+    fontSize: '0.85rem',
+    border: '1px solid #c62828',
+    borderRadius: '0.4rem',
+    background: 'white',
+    color: '#c62828',
+    fontWeight: 600,
+  },
+  subtitle: { color: '#666', marginTop: '0.3rem', marginBottom: '1.5rem' },
+  cutLine: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '0.5rem',
+    margin: '0.5rem 0',
+    color: '#b00020',
+    fontSize: '0.75rem',
+    fontWeight: 'bold',
+    letterSpacing: '0.08em',
+  },
   playerCard: {
     display: 'block',
     width: '100%',
@@ -182,7 +247,27 @@ const styles = {
     marginBottom: '1rem',
     cursor: 'pointer',
   },
-  playerName: { fontSize: '1.15rem', fontWeight: 'bold', color: '#004b87', marginBottom: '0.5rem' },
+  playerCardBelowCut: {
+    opacity: 0.7,
+  },
+  playerHeader: { display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '0.5rem' },
+  rankBadge: {
+    width: '1.8rem',
+    height: '1.8rem',
+    borderRadius: '50%',
+    background: '#b6bfc5',
+    color: 'white',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    fontWeight: 'bold',
+    fontSize: '0.9rem',
+    flexShrink: 0,
+  },
+  rankBadgeTop: {
+    background: '#004b87',
+  },
+  playerName: { fontSize: '1.15rem', fontWeight: 'bold', color: '#004b87' },
   noRounds: { color: '#888', fontSize: '0.9rem', margin: 0 },
   statsRow: { display: 'flex', flexWrap: 'wrap', gap: '1.25rem' },
   stat: { textAlign: 'center' },
