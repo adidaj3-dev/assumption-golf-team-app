@@ -7,6 +7,10 @@ export default defineConfig({
     react(),
     VitePWA({
       registerType: 'autoUpdate',
+      injectRegister: false, // we register manually in main.jsx to force an
+      // immediate reload when a new version is found, instead of silently
+      // updating in the background (which is what was requiring a
+      // delete-and-re-pin to actually see changes)
       manifest: {
         name: 'Assumption Golf',
         short_name: 'AU Golf',
