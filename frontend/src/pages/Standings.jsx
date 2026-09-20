@@ -5,18 +5,21 @@ import { colors } from '../theme.js'
 const API_BASE = import.meta.env.VITE_API_BASE
 
 export default function Standings() {
+  const [type, setType] = useState(null) // 'individual' or 'combine'
   const [team, setTeam] = useState(null) // 'men' or 'women'
   const [entries, setEntries] = useState(null)
   const [error, setError] = useState(null)
 
-  async function openTeam(t) {
+  async function openTeam(chosenType, t) {
+    setType(chosenType)
     setTeam(t)
     setEntries(null)
     setError(null)
     try {
       const { data: sessionData } = await supabase.auth.getSession()
       const token = sessionData.session?.access_token
-      const res = await fetch(`${API_BASE}/standings?team=${t}`, {
+      const endpoint = chosenType === 'individual' ? '/standings' : '/combine-standings'
+      const res = await fetch(`${API_BASE}${endpoint}?team=${t}`, {
         headers: { Authorization: `Bearer ${token}` },
       })
       if (!res.ok) throw new Error(await res.text())
@@ -26,16 +29,30 @@ export default function Standings() {
     }
   }
 
-  if (!team) {
+  function goHome() {
+    setType(null)
+    setTeam(null)
+    setEntries(null)
+    setError(null)
+  }
+
+  if (!type) {
     return (
       <div style={styles.page}>
-        <h2>Individual Standings</h2>
-        <p style={styles.objective}>
-          Ranked by season scoring average — completed 9 or 18 hole Team Rounds only.
-        </p>
+        <h2>Standings</h2>
+
+        <h3 style={styles.sectionTitle}>Individual Standings</h3>
+        <p style={styles.objective}>Ranked by season scoring average — completed 9 or 18 hole Team Rounds only.</p>
         <div style={styles.teamButtons}>
-          <button style={styles.teamBtn} onClick={() => openTeam('men')}>Men's Team</button>
-          <button style={styles.teamBtn} onClick={() => openTeam('women')}>Women's Team</button>
+          <button style={styles.teamBtn} onClick={() => openTeam('individual', 'men')}>Men's Team</button>
+          <button style={styles.teamBtn} onClick={() => openTeam('individual', 'women')}>Women's Team</button>
+        </div>
+
+        <h3 style={styles.sectionTitle}>Combine Standings</h3>
+        <p style={styles.objective}>Ranked by season-wide combine performance across every practice combine logged.</p>
+        <div style={styles.teamButtons}>
+          <button style={styles.teamBtn} onClick={() => openTeam('combine', 'men')}>Men's Team</button>
+          <button style={styles.teamBtn} onClick={() => openTeam('combine', 'women')}>Women's Team</button>
         </div>
       </div>
     )
@@ -43,8 +60,10 @@ export default function Standings() {
 
   return (
     <div style={styles.page}>
-      <button style={styles.linkBtn} onClick={() => setTeam(null)}>← Back</button>
-      <h2>{team === 'men' ? "Men's" : "Women's"} Standings</h2>
+      <button style={styles.linkBtn} onClick={goHome}>← Back</button>
+      <h2>
+        {team === 'men' ? "Men's" : "Women's"} {type === 'individual' ? 'Individual' : 'Combine'} Standings
+      </h2>
 
       {error && <p style={styles.error}>{error}</p>}
       {!entries && !error && <p>Loading…</p>}
@@ -53,10 +72,11 @@ export default function Standings() {
         <p style={styles.muted}>No players assigned to this team yet.</p>
       )}
 
-      {entries && entries.map((e, i) => {
+      {entries && entries.map((e) => {
         const showCutLine =
           (team === 'men' && (e.rank === 6 || e.rank === 10)) ||
           (team === 'women' && e.rank === 6)
+        const value = type === 'individual' ? e.scoring_avg_to_par : e.combine_score_pct
         return (
           <div key={e.player_id}>
             {showCutLine && (
@@ -73,7 +93,7 @@ export default function Standings() {
                 <div style={styles.tierLabel}>{e.tier}</div>
               </div>
               <div style={styles.avgCol}>
-                {e.scoring_avg_to_par == null ? '—' : formatToPar(e.scoring_avg_to_par)}
+                {value == null ? '—' : type === 'individual' ? formatToPar(value) : `${value}%`}
               </div>
             </div>
           </div>
@@ -110,11 +130,12 @@ const styles = {
     borderRadius: '0.75rem',
     boxShadow: '0 2px 10px rgba(0,0,0,0.06)',
   },
-  objective: { color: colors.textMuted },
-  teamButtons: { display: 'flex', flexDirection: 'column', gap: '0.75rem', marginTop: '1.5rem' },
+  sectionTitle: { marginTop: '1.75rem', marginBottom: '0.25rem' },
+  objective: { color: colors.textMuted, marginTop: 0 },
+  teamButtons: { display: 'flex', flexDirection: 'column', gap: '0.75rem', marginTop: '0.75rem' },
   teamBtn: {
-    padding: '1.25rem',
-    fontSize: '1.1rem',
+    padding: '1.1rem',
+    fontSize: '1.05rem',
     fontWeight: 600,
     background: colors.primary,
     color: 'white',

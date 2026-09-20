@@ -1057,3 +1057,64 @@ def standings(team: str, player=Depends(get_current_player)):
         e["tier"] = _standings_tier(team, i + 1)
 
     return entries
+
+
+# ---------------------------------------------------------------------------
+# Combine Standings — same men's/women's tiering as Individual Standings,
+# but ranked by season-wide combine performance instead of scoring average.
+# ---------------------------------------------------------------------------
+
+def _combine_standings_score(player_id: str) -> Optional[float]:
+    """Average, across every combine attempt this player has ever logged, of
+    what percentage of that combine's max possible points they scored.
+    Averaging percentages (not raw points) is what makes attempts across
+    different combines comparable on one scale."""
+    sessions = (
+        supabase.table("combine_sessions")
+        .select("combine_type, total_points")
+        .eq("player_id", player_id)
+        .execute()
+        .data
+    )
+    if not sessions:
+        return None
+
+    percentages = []
+    for s in sessions:
+        definition = COMBINE_DEFINITIONS.get(s["combine_type"])
+        if not definition:
+            continue
+        percentages.append(100 * s["total_points"] / definition["max_points"])
+
+    if not percentages:
+        return None
+    return round(sum(percentages) / len(percentages), 1)
+
+
+@app.get("/combine-standings")
+def combine_standings(team: str, player=Depends(get_current_player)):
+    if team not in ("men", "women"):
+        raise HTTPException(400, "team must be 'men' or 'women'")
+
+    roster = (
+        supabase.table("players")
+        .select("id, full_name")
+        .eq("team", team)
+        .eq("role", "player")
+        .execute()
+        .data
+    )
+
+    entries = []
+    for p in roster:
+        score = _combine_standings_score(p["id"])
+        entries.append({"player_id": p["id"], "full_name": p["full_name"], "combine_score_pct": score})
+
+    # Higher percentage is better, so sort descending (None goes last).
+    entries.sort(key=lambda e: (e["combine_score_pct"] is None, -(e["combine_score_pct"] or 0)))
+
+    for i, e in enumerate(entries):
+        e["rank"] = i + 1
+        e["tier"] = _standings_tier(team, i + 1)
+
+    return entries
