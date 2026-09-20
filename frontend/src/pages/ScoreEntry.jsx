@@ -7,6 +7,7 @@ import Stats from './Stats.jsx'
 import CoachDashboard from './CoachDashboard.jsx'
 import Practice from './Practice.jsx'
 import CombinesDashboard from './CombinesDashboard.jsx'
+import Standings from './Standings.jsx'
 
 const API_BASE = import.meta.env.VITE_API_BASE
 
@@ -49,7 +50,8 @@ export default function ScoreEntry() {
   const [courses, setCourses] = useState([])
   const [selectedCourseId, setSelectedCourseId] = useState('')
   const [showCourseSetup, setShowCourseSetup] = useState(false)
-  const [tab, setTab] = useState('play') // 'play', 'stats', or 'team' (coach only)
+  const [tab, setTab] = useState('play') // 'play', 'stats', 'practice', 'standings', 'team' (coach only), 'combines' (coach only)
+  const [roundType, setRoundType] = useState(null) // 'team' | 'individual' | 'qualifier' — chosen on the Play screen before picking a course
   const [round, setRound] = useState(null)
   const [holes, setHoles] = useState([])
   const [holeIndex, setHoleIndex] = useState(0)
@@ -117,7 +119,7 @@ export default function ScoreEntry() {
 
       const r = await apiCall('/rounds/start', {
         method: 'POST',
-        body: JSON.stringify({ course_id: selectedCourseId }),
+        body: JSON.stringify({ course_id: selectedCourseId, round_type: roundType }),
       })
 
       setHoles(sortedHoles)
@@ -314,27 +316,43 @@ export default function ScoreEntry() {
     )
   }
 
-  // Not mid-round: show the nav tabs (Play / My Stats / Team Stats for coaches)
+  // Not mid-round: show the nav tabs
   return (
     <div>
       <div style={styles.tabBar}>
         <button
           style={{ ...styles.tabBtn, ...(tab === 'play' ? styles.tabBtnActive : {}) }}
-          onClick={() => setTab('play')}
+          onClick={() => { setTab('play'); setRoundType(null) }}
         >
           Play
         </button>
-        <button
-          style={{ ...styles.tabBtn, ...(tab === 'stats' ? styles.tabBtnActive : {}) }}
-          onClick={() => setTab('stats')}
-        >
-          My Stats
-        </button>
+        {player.role === 'coach' && (
+          <button
+            style={{ ...styles.tabBtn, ...(tab === 'stats' ? styles.tabBtnActive : {}) }}
+            onClick={() => setTab('stats')}
+          >
+            My Stats
+          </button>
+        )}
         <button
           style={{ ...styles.tabBtn, ...(tab === 'practice' ? styles.tabBtnActive : {}) }}
           onClick={() => setTab('practice')}
         >
           Practice
+        </button>
+        {player.role !== 'coach' && (
+          <button
+            style={{ ...styles.tabBtn, ...(tab === 'stats' ? styles.tabBtnActive : {}) }}
+            onClick={() => setTab('stats')}
+          >
+            Stats
+          </button>
+        )}
+        <button
+          style={{ ...styles.tabBtn, ...(tab === 'standings' ? styles.tabBtnActive : {}) }}
+          onClick={() => setTab('standings')}
+        >
+          {player.role === 'coach' ? 'Standings' : 'Individual Standings'}
         </button>
         {player.role === 'coach' && (
           <button
@@ -356,20 +374,56 @@ export default function ScoreEntry() {
 
       {tab === 'stats' && <Stats player={player} />}
       {tab === 'practice' && <Practice player={player} />}
+      {tab === 'standings' && <Standings />}
       {tab === 'team' && player.role === 'coach' && <CoachDashboard />}
       {tab === 'combines' && player.role === 'coach' && <CombinesDashboard />}
-      {tab === 'play' && (
+      {tab === 'play' && !roundType && (
         <div style={styles.page}>
-          <h2>Start a round</h2>
+          <h2>Play</h2>
+          <p style={styles.subtitleText}>What kind of round is this?</p>
+
+          <button style={styles.roundTypeBtn} onClick={() => setRoundType('team')}>
+            <div style={styles.roundTypeName}>Team Round</div>
+            <div style={styles.roundTypeDesc}>Counts toward season standings</div>
+          </button>
+          <button style={styles.roundTypeBtn} onClick={() => setRoundType('individual')}>
+            <div style={styles.roundTypeName}>Individual Round</div>
+            <div style={styles.roundTypeDesc}>Practice on your own — stats only, not scored toward standings</div>
+          </button>
+          <button style={styles.roundTypeBtn} onClick={() => setRoundType('qualifier')}>
+            <div style={styles.roundTypeName}>Qualifier</div>
+            <div style={styles.roundTypeDesc}>Playing for a tournament spot</div>
+          </button>
+          <button style={styles.roundTypeBtn} onClick={() => setRoundType('tournament')}>
+            <div style={styles.roundTypeName}>Tournament</div>
+            <div style={styles.roundTypeDesc}>Coming soon</div>
+          </button>
 
           {player.role === 'coach' && (
             <button style={styles.linkBtn} onClick={() => setShowCourseSetup(true)}>
               + Add a new course
             </button>
           )}
+        </div>
+      )}
+
+      {tab === 'play' && roundType === 'tournament' && (
+        <div style={styles.page}>
+          <button style={styles.linkBtn} onClick={() => setRoundType(null)}>← Back</button>
+          <h2>Tournament Rounds</h2>
+          <p>Coming soon — tournament rounds will tie into live public leaderboards. For now, use Team Round, Individual Round, or Qualifier.</p>
+        </div>
+      )}
+
+      {tab === 'play' && roundType && roundType !== 'tournament' && (
+        <div style={styles.page}>
+          <button style={styles.linkBtn} onClick={() => setRoundType(null)}>← Back</button>
+          <h2>
+            {roundType === 'team' ? 'Team Round' : roundType === 'individual' ? 'Individual Round' : 'Qualifier'}
+          </h2>
 
           {courses.length === 0 ? (
-            <p>No courses yet. {player.role === 'coach' ? 'Add one above to get started.' : 'Ask your coach to add one.'}</p>
+            <p>No courses yet. {player.role === 'coach' ? 'Add one from the previous screen.' : 'Ask your coach to add one.'}</p>
           ) : (
             <>
               <label style={styles.label}>Course</label>
@@ -567,6 +621,20 @@ const styles = {
     color: '#b00020',
     marginLeft: 'auto',
   },
+  subtitleText: { color: '#666', marginTop: '-0.5rem', marginBottom: '1.5rem' },
+  roundTypeBtn: {
+    display: 'block',
+    width: '100%',
+    textAlign: 'left',
+    background: '#eef1f5',
+    border: 'none',
+    borderRadius: '0.6rem',
+    padding: '1.1rem',
+    marginBottom: '0.75rem',
+    cursor: 'pointer',
+  },
+  roundTypeName: { fontWeight: 'bold', color: '#004b87', fontSize: '1.05rem' },
+  roundTypeDesc: { fontSize: '0.85rem', color: '#666', marginTop: '0.2rem' },
   linkBtn: {
     display: 'block',
     width: '100%',

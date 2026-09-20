@@ -6,6 +6,7 @@ export default function Login() {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [fullName, setFullName] = useState('')
+  const [team, setTeam] = useState('')
   const [error, setError] = useState(null)
   const [loading, setLoading] = useState(false)
   const [checkEmail, setCheckEmail] = useState(false)
@@ -28,7 +29,7 @@ export default function Login() {
         if (data.user) {
           const { error: insertError } = await supabase
             .from('players')
-            .insert({ id: data.user.id, full_name: fullName, role: 'player' })
+            .insert({ id: data.user.id, full_name: fullName, role: 'player', team })
           if (insertError) throw insertError
         }
 
@@ -72,6 +73,18 @@ export default function Login() {
               onChange={(e) => setFullName(e.target.value)}
               required
             />
+
+            <label style={styles.label}>Team</label>
+            <select
+              style={styles.input}
+              value={team}
+              onChange={(e) => setTeam(e.target.value)}
+              required
+            >
+              <option value="" disabled>Select your team…</option>
+              <option value="men">Men's Team</option>
+              <option value="women">Women's Team</option>
+            </select>
           </>
         )}
 

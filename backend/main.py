@@ -67,6 +67,7 @@ class CourseIn(BaseModel):
 class RoundStartIn(BaseModel):
     course_id: UUID
     tournament_id: Optional[UUID] = None
+    round_type: str = "individual"  # 'team' | 'individual' | 'qualifier' | 'tournament'
 
 
 class HoleScoreIn(BaseModel):
@@ -191,13 +192,19 @@ def get_public_leaderboard(slug: str):
 # Rounds & hole-by-hole scoring (players use these)
 # ---------------------------------------------------------------------------
 
+VALID_ROUND_TYPES = {"team", "individual", "qualifier", "tournament"}
+
+
 @app.post("/rounds/start")
 def start_round(r: RoundStartIn, player=Depends(get_current_player)):
+    if r.round_type not in VALID_ROUND_TYPES:
+        raise HTTPException(400, f"Invalid round_type: {r.round_type}")
     row = supabase.table("rounds").insert(
         {
             "player_id": player["id"],
             "course_id": str(r.course_id),
             "tournament_id": str(r.tournament_id) if r.tournament_id else None,
+            "round_type": r.round_type,
         }
     ).execute().data[0]
     return row
@@ -244,8 +251,7 @@ def round_summary(round_id: UUID, player=Depends(get_current_player)):
     round_row = supabase.table("rounds").select("*").eq("id", str(round_id)).single().execute().data
     if not round_row:
         raise HTTPException(404, "Round not found")
-    if round_row["player_id"] != player["id"] and player["role"] != "coach":
-        raise HTTPException(403, "Not authorized")
+    # Any signed-in teammate can view any round — small-team transparency.
 
     scores = (
         supabase.table("hole_scores")
@@ -285,12 +291,12 @@ def player_rounds(player_id: UUID, player=Depends(get_current_player)):
     """Lists every round a player has (in-progress or completed), newest
     first, with a quick summary of each — used for the coach's per-player
     round history view."""
-    if player["id"] != str(player_id) and player["role"] != "coach":
-        raise HTTPException(403, "Not authorized")
+    # Any signed-in teammate can view any player's stats/rounds — small-team
+    # transparency, not just coach-only.
 
     rounds = (
         supabase.table("rounds")
-        .select("id, started_at, completed_at, courses(name)")
+        .select("id, started_at, completed_at, round_type, course_id, courses(name)")
         .eq("player_id", str(player_id))
         .order("started_at", desc=True)
         .execute()
@@ -308,16 +314,30 @@ def player_rounds(player_id: UUID, player=Depends(get_current_player)):
         )
         total_strokes = sum(s["strokes"] for s in scores)
         total_par = sum(s["holes"]["par"] for s in scores)
+        course_total_holes = _course_hole_count(r["course_id"])
+        is_complete_length = len(scores) in (9, 18) and len(scores) == course_total_holes
+        counts_for_standings = (
+            r["round_type"] == "team" and r["completed_at"] is not None and is_complete_length
+        )
         results.append({
             "id": r["id"],
             "course_name": r["courses"]["name"] if r["courses"] else "Unknown course",
             "started_at": r["started_at"],
             "completed_at": r["completed_at"],
+            "round_type": r["round_type"],
             "holes_played": len(scores),
             "score_to_par": (total_strokes - total_par) if scores else None,
             "completed": r["completed_at"] is not None,
+            "counts_for_standings": counts_for_standings,
         })
     return results
+
+
+def _course_hole_count(course_id: str) -> int:
+    """How many holes a course has — used to decide whether a round was
+    actually played to completion (9 or 18 holes) for standings purposes."""
+    holes = supabase.table("holes").select("id").eq("course_id", course_id).execute().data
+    return len(holes)
 
 
 def _compute_player_stats(player_id: str) -> dict:
@@ -399,8 +419,8 @@ def _compute_player_stats(player_id: str) -> dict:
 
 @app.get("/players/{player_id}/stats")
 def player_stats(player_id: UUID, player=Depends(get_current_player)):
-    if player["id"] != str(player_id) and player["role"] != "coach":
-        raise HTTPException(403, "Not authorized")
+    # Any signed-in teammate can view any player's stats/rounds — small-team
+    # transparency, not just coach-only.
     return _compute_player_stats(str(player_id))
 
 
@@ -784,8 +804,8 @@ def player_combines(player_id: UUID, combine_type: Optional[str] = None, player=
     """History of a player's combine sessions, optionally filtered to one
     combine type. Used both for the player's own practice history and the
     coach's view into any player's progress."""
-    if player["id"] != str(player_id) and player["role"] != "coach":
-        raise HTTPException(403, "Not authorized")
+    # Any signed-in teammate can view any player's stats/rounds — small-team
+    # transparency, not just coach-only.
 
     query = (
         supabase.table("combine_sessions")
@@ -866,8 +886,7 @@ def round_scorecard(round_id: UUID, player=Depends(get_current_player)):
     round_row = supabase.table("rounds").select("*").eq("id", str(round_id)).single().execute().data
     if not round_row:
         raise HTTPException(404, "Round not found")
-    if round_row["player_id"] != player["id"] and player["role"] != "coach":
-        raise HTTPException(403, "Not authorized")
+    # Any signed-in teammate can view any round — small-team transparency.
 
     course = supabase.table("courses").select("name").eq("id", round_row["course_id"]).single().execute().data
     all_holes = (
@@ -914,8 +933,8 @@ def player_combines_summary(player_id: UUID, player=Depends(get_current_player))
     """Every combine type this player has attempted, with their average and
     best score plus which benchmark tier (D2/D1/PGA) their average falls
     into — the data behind the coach's Combines tab."""
-    if player["id"] != str(player_id) and player["role"] != "coach":
-        raise HTTPException(403, "Not authorized")
+    # Any signed-in teammate can view any player's stats/rounds — small-team
+    # transparency, not just coach-only.
 
     sessions = (
         supabase.table("combine_sessions")
@@ -960,3 +979,81 @@ def player_combines_summary(player_id: UUID, player=Depends(get_current_player))
         })
 
     return results
+
+
+# ---------------------------------------------------------------------------
+# Individual Standings — men's/women's season rankings based ONLY on
+# completed (9 or 18 hole) Team Rounds, with fixed rank-based tiers.
+# ---------------------------------------------------------------------------
+
+def _standings_avg(player_id: str) -> Optional[float]:
+    """Average score-to-par across this player's completed Team Rounds that
+    were actually played to a full 9 or 18 holes. Returns None if they have
+    no qualifying rounds yet."""
+    rounds = (
+        supabase.table("rounds")
+        .select("id, course_id, completed_at")
+        .eq("player_id", player_id)
+        .eq("round_type", "team")
+        .not_.is_("completed_at", "null")
+        .execute()
+        .data
+    )
+
+    scores_to_par = []
+    for r in rounds:
+        scores = (
+            supabase.table("hole_scores")
+            .select("strokes, holes(par)")
+            .eq("round_id", r["id"])
+            .execute()
+            .data
+        )
+        course_total_holes = _course_hole_count(r["course_id"])
+        if len(scores) in (9, 18) and len(scores) == course_total_holes:
+            total_strokes = sum(s["strokes"] for s in scores)
+            total_par = sum(s["holes"]["par"] for s in scores)
+            scores_to_par.append(total_strokes - total_par)
+
+    if not scores_to_par:
+        return None
+    return round(sum(scores_to_par) / len(scores_to_par), 2)
+
+
+def _standings_tier(team: str, rank: int) -> str:
+    if team == "women":
+        return "In" if rank <= 5 else "Individual"
+    # men
+    if rank <= 5:
+        return "Starting Lineup"
+    if rank <= 9:
+        return "Qualifier"
+    return "Outside Cut Line"
+
+
+@app.get("/standings")
+def standings(team: str, player=Depends(get_current_player)):
+    if team not in ("men", "women"):
+        raise HTTPException(400, "team must be 'men' or 'women'")
+
+    roster = (
+        supabase.table("players")
+        .select("id, full_name")
+        .eq("team", team)
+        .eq("role", "player")
+        .execute()
+        .data
+    )
+
+    entries = []
+    for p in roster:
+        avg = _standings_avg(p["id"])
+        entries.append({"player_id": p["id"], "full_name": p["full_name"], "scoring_avg_to_par": avg})
+
+    entries.sort(key=lambda e: (e["scoring_avg_to_par"] is None, e["scoring_avg_to_par"]))
+
+    for i, e in enumerate(entries):
+        e["rank"] = i + 1
+        e["tier"] = _standings_tier(team, i + 1)
+
+    return entries

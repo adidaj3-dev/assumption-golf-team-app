@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { supabase } from '../supabaseClient.js'
 import Scorecard from './Scorecard.jsx'
+import TeamRoster from './TeamRoster.jsx'
 
 const API_BASE = import.meta.env.VITE_API_BASE
 
@@ -15,9 +16,11 @@ async function authedFetch(path) {
 }
 
 export default function Stats({ player }) {
+  const [view, setView] = useState('home') // 'home', 'teamRounds', 'individualRounds', 'roster', 'scorecard'
   const [stats, setStats] = useState(null)
   const [rounds, setRounds] = useState(null)
   const [selectedRoundId, setSelectedRoundId] = useState(null)
+  const [returnView, setReturnView] = useState('home')
   const [error, setError] = useState(null)
 
   useEffect(() => {
@@ -25,13 +28,62 @@ export default function Stats({ player }) {
     authedFetch(`/players/${player.id}/rounds`).then(setRounds).catch((err) => setError(err.message))
   }, [player.id])
 
-  if (selectedRoundId) {
-    return <Scorecard roundId={selectedRoundId} onBack={() => setSelectedRoundId(null)} />
+  if (view === 'scorecard') {
+    return <Scorecard roundId={selectedRoundId} onBack={() => setView(returnView)} />
+  }
+  if (view === 'roster') {
+    return <TeamRoster onBack={() => setView('home')} />
   }
 
   if (error) return <div style={styles.page}><p style={styles.error}>{error}</p></div>
-  if (!stats) return <div style={styles.page}><p>Loading…</p></div>
+  if (!stats || !rounds) return <div style={styles.page}><p>Loading…</p></div>
 
+  const teamRounds = rounds.filter((r) => r.counts_for_standings)
+  const individualRounds = rounds.filter((r) => !r.counts_for_standings)
+
+  function openScorecard(roundId, fromView) {
+    setSelectedRoundId(roundId)
+    setReturnView(fromView)
+    setView('scorecard')
+  }
+
+  if (view === 'teamRounds' || view === 'individualRounds') {
+    const list = view === 'teamRounds' ? teamRounds : individualRounds
+    return (
+      <div style={styles.page}>
+        <button style={styles.linkBtn} onClick={() => setView('home')}>← Back to stats</button>
+        <h2>{view === 'teamRounds' ? 'Team Rounds' : 'Individual Rounds'}</h2>
+        <p style={styles.subtitle}>
+          {view === 'teamRounds'
+            ? 'Completed 9/18-hole rounds that count toward standings'
+            : 'Practice, incomplete, and qualifier rounds — not counted in standings'}
+        </p>
+        {list.length === 0 ? (
+          <p style={styles.muted}>No rounds here yet.</p>
+        ) : (
+          list.map((r) => (
+            <button
+              key={r.id}
+              style={styles.roundRow}
+              onClick={() => openScorecard(r.id, view)}
+            >
+              <div>
+                <div style={styles.roundCourse}>
+                  {r.course_name} {r.round_type === 'qualifier' && <span style={styles.badge}>Qualifier</span>}
+                </div>
+                <div style={styles.roundDate}>
+                  {new Date(r.started_at).toLocaleDateString()} · {r.holes_played} holes {r.completed ? '' : '(in progress)'}
+                </div>
+              </div>
+              <div style={styles.roundScore}>{formatToPar(r.score_to_par)}</div>
+            </button>
+          ))
+        )}
+      </div>
+    )
+  }
+
+  // view === 'home'
   return (
     <div style={styles.page}>
       <h2>My Stats</h2>
@@ -62,24 +114,21 @@ export default function Stats({ player }) {
         </>
       )}
 
-      <h3 style={styles.sectionTitle}>My Rounds</h3>
-      {!rounds ? (
-        <p>Loading…</p>
-      ) : rounds.length === 0 ? (
-        <p style={styles.muted}>No rounds yet.</p>
-      ) : (
-        rounds.map((r) => (
-          <button key={r.id} style={styles.roundRow} onClick={() => setSelectedRoundId(r.id)}>
-            <div>
-              <div style={styles.roundCourse}>{r.course_name}</div>
-              <div style={styles.roundDate}>
-                {new Date(r.started_at).toLocaleDateString()} · {r.holes_played} holes {r.completed ? '' : '(in progress)'}
-              </div>
-            </div>
-            <div style={styles.roundScore}>{formatToPar(r.score_to_par)}</div>
-          </button>
-        ))
-      )}
+      <h3 style={styles.sectionTitle}>Round History</h3>
+      <div style={styles.navGrid}>
+        <button style={styles.navBtn} onClick={() => setView('teamRounds')}>
+          <div style={styles.navBtnTitle}>Team Rounds</div>
+          <div style={styles.navBtnSub}>{teamRounds.length} · counts toward standings</div>
+        </button>
+        <button style={styles.navBtn} onClick={() => setView('individualRounds')}>
+          <div style={styles.navBtnTitle}>Individual Rounds</div>
+          <div style={styles.navBtnSub}>{individualRounds.length} · practice only</div>
+        </button>
+        <button style={styles.navBtn} onClick={() => setView('roster')}>
+          <div style={styles.navBtnTitle}>Team Roster</div>
+          <div style={styles.navBtnSub}>Look up any teammate's rounds</div>
+        </button>
+      </div>
     </div>
   )
 }
@@ -127,6 +176,19 @@ const styles = {
   cardValue: { fontSize: '1.8rem', fontWeight: 'bold', color: '#004b87' },
   cardLabel: { fontSize: '0.85rem', color: '#666', marginTop: '0.25rem' },
   muted: { color: '#888', fontSize: '0.9rem' },
+  navGrid: { display: 'flex', flexDirection: 'column', gap: '0.6rem' },
+  navBtn: {
+    display: 'block',
+    width: '100%',
+    textAlign: 'left',
+    background: '#eef1f5',
+    border: 'none',
+    borderRadius: '0.6rem',
+    padding: '1rem',
+    cursor: 'pointer',
+  },
+  navBtnTitle: { fontWeight: 600, color: '#004b87' },
+  navBtnSub: { fontSize: '0.8rem', color: '#666', marginTop: '0.15rem' },
   roundRow: {
     display: 'flex',
     justifyContent: 'space-between',
@@ -143,5 +205,24 @@ const styles = {
   roundCourse: { fontWeight: 600 },
   roundDate: { fontSize: '0.8rem', color: '#666', marginTop: '0.15rem' },
   roundScore: { fontSize: '1.3rem', fontWeight: 'bold', color: '#004b87' },
+  badge: {
+    fontSize: '0.7rem',
+    background: '#004b87',
+    color: 'white',
+    borderRadius: '1rem',
+    padding: '0.1rem 0.5rem',
+    marginLeft: '0.4rem',
+  },
+  linkBtn: {
+    display: 'block',
+    marginBottom: '1rem',
+    background: 'none',
+    border: 'none',
+    color: '#004b87',
+    textDecoration: 'underline',
+    fontSize: '0.95rem',
+    cursor: 'pointer',
+    padding: 0,
+  },
   error: { color: '#b00020' },
 }
