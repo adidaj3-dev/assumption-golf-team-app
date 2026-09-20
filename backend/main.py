@@ -197,7 +197,7 @@ def get_public_leaderboard(slug: str):
 VALID_ROUND_TYPES = {"team", "individual", "qualifier", "tournament"}
 
 
-PHASE2_EVENT_FORMATS = {"stroke_individual", "stroke_team"}  # only these are playable so far
+PLAYABLE_EVENT_FORMATS = {"stroke_individual", "stroke_team", "best_ball"}  # formats with working play/leaderboard
 
 
 @app.post("/rounds/start")
@@ -211,7 +211,7 @@ def start_round(r: RoundStartIn, player=Depends(get_current_player)):
         event = supabase.table("events").select("format_type").eq("id", str(r.event_id)).single().execute().data
         if not event:
             raise HTTPException(404, "Event not found")
-        if event["format_type"] not in PHASE2_EVENT_FORMATS:
+        if event["format_type"] not in PLAYABLE_EVENT_FORMATS:
             raise HTTPException(400, f"'{event['format_type']}' rounds aren't playable yet — coming in a later update")
 
     row = supabase.table("rounds").insert(
@@ -1340,7 +1340,7 @@ def event_leaderboard(event_id: UUID, player=Depends(get_current_player)):
     event = supabase.table("events").select("*").eq("id", str(event_id)).single().execute().data
     if not event:
         raise HTTPException(404, "Event not found")
-    if event["format_type"] not in PHASE2_EVENT_FORMATS:
+    if event["format_type"] not in PLAYABLE_EVENT_FORMATS:
         raise HTTPException(400, f"Live leaderboard for '{event['format_type']}' isn't built yet")
 
     # Every round tied to this event, one per player (a player could in
@@ -1387,6 +1387,67 @@ def event_leaderboard(event_id: UUID, player=Depends(get_current_player)):
 
     # stroke_team: sum each team's members' individual scores-to-par
     teams = supabase.table("event_teams").select("id, team_name").eq("event_id", str(event_id)).execute().data
+
+    if event["format_type"] == "best_ball":
+        # For each hole, take the best (lowest) strokes among teammates who
+        # have recorded that hole; the team's score is the sum of those
+        # per-hole bests, compared to par for the holes actually covered.
+        team_leaderboard = []
+        for t in teams:
+            members = (
+                supabase.table("event_team_members")
+                .select("player_id, players(full_name)")
+                .eq("event_team_id", t["id"])
+                .execute()
+                .data
+            )
+            member_rows = []
+            best_strokes_by_hole = {}
+            par_by_hole = {}
+            for m in members:
+                r = latest_round_by_player.get(m["player_id"])
+                if not r:
+                    member_rows.append({"player_name": m["players"]["full_name"], "score_to_par": None, "holes_played": 0})
+                    continue
+                indiv_score_to_par, indiv_holes_played = score_for_round(r["id"])
+                member_rows.append({
+                    "player_name": m["players"]["full_name"],
+                    "score_to_par": indiv_score_to_par,
+                    "holes_played": indiv_holes_played,
+                })
+                hole_scores = (
+                    supabase.table("hole_scores")
+                    .select("hole_id, strokes, holes(par)")
+                    .eq("round_id", r["id"])
+                    .execute()
+                    .data
+                )
+                for hs in hole_scores:
+                    hid = hs["hole_id"]
+                    par_by_hole[hid] = hs["holes"]["par"]
+                    if hid not in best_strokes_by_hole or hs["strokes"] < best_strokes_by_hole[hid]:
+                        best_strokes_by_hole[hid] = hs["strokes"]
+
+            if best_strokes_by_hole:
+                team_strokes = sum(best_strokes_by_hole.values())
+                team_par = sum(par_by_hole[hid] for hid in best_strokes_by_hole)
+                team_score_to_par = team_strokes - team_par
+                holes_played = len(best_strokes_by_hole)
+            else:
+                team_score_to_par = None
+                holes_played = 0
+
+            team_leaderboard.append({
+                "team_name": t["team_name"],
+                "team_score_to_par": team_score_to_par,
+                "holes_played": holes_played,
+                "members": member_rows,
+            })
+
+        team_leaderboard.sort(key=lambda e: (e["team_score_to_par"] is None, e["team_score_to_par"] or 0))
+        return {"format_type": event["format_type"], "leaderboard": team_leaderboard}
+
+    # stroke_team
     team_leaderboard = []
     for t in teams:
         members = (

@@ -434,7 +434,7 @@ export default function ScoreEntry() {
           ) : (
             (() => {
               const playable = tournamentEvents.filter((e) =>
-                ['stroke_individual', 'stroke_team'].includes(e.format_type)
+                ['stroke_individual', 'stroke_team', 'best_ball'].includes(e.format_type)
               )
               if (playable.length === 0) {
                 return <p>No tournament events set up for play yet — other formats are coming in a later update.</p>
@@ -450,7 +450,7 @@ export default function ScoreEntry() {
                 >
                   <div style={styles.roundTypeName}>{ev.name}</div>
                   <div style={styles.roundTypeDesc}>
-                    {ev.format_type === 'stroke_individual' ? 'Stroke Play — Individual' : 'Stroke Play — Team'}
+                    {ev.format_type === 'stroke_individual' ? 'Stroke Play — Individual' : ev.format_type === 'best_ball' ? 'Best Ball' : 'Stroke Play — Team'}
                     {ev.courses && ` · ${ev.courses.name}`}
                   </div>
                 </button>

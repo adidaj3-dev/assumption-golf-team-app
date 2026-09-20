@@ -201,7 +201,7 @@ function EventDetail({ eventId, canManage, onBack }) {
   const [leaderboard, setLeaderboard] = useState(null)
   const [error, setError] = useState(null)
 
-  const PLAYABLE_FORMATS = ['stroke_individual', 'stroke_team']
+  const PLAYABLE_FORMATS = ['stroke_individual', 'stroke_team', 'best_ball']
 
   useEffect(() => {
     load()
