@@ -70,6 +70,7 @@ class RoundStartIn(BaseModel):
     tournament_id: Optional[UUID] = None
     round_type: str = "individual"  # 'team' | 'individual' | 'qualifier' | 'tournament'
     event_id: Optional[UUID] = None  # set when round_type == 'tournament'
+    event_team_id: Optional[UUID] = None  # set for team-ball formats (scramble, alt shot)
 
 
 class HoleScoreIn(BaseModel):
@@ -197,7 +198,12 @@ def get_public_leaderboard(slug: str):
 VALID_ROUND_TYPES = {"team", "individual", "qualifier", "tournament"}
 
 
-PLAYABLE_EVENT_FORMATS = {"stroke_individual", "stroke_team", "best_ball"}  # formats with working play/leaderboard
+PLAYABLE_EVENT_FORMATS = {
+    "stroke_individual", "stroke_team", "best_ball",
+    "scramble_2", "scramble_4", "alt_shot",
+}  # formats with working play/leaderboard
+
+TEAM_BALL_FORMATS = {"scramble_2", "scramble_4", "alt_shot"}  # one shared scorecard per team
 
 
 @app.post("/rounds/start")
@@ -214,6 +220,35 @@ def start_round(r: RoundStartIn, player=Depends(get_current_player)):
         if event["format_type"] not in PLAYABLE_EVENT_FORMATS:
             raise HTTPException(400, f"'{event['format_type']}' rounds aren't playable yet — coming in a later update")
 
+        if event["format_type"] in TEAM_BALL_FORMATS:
+            if not r.event_team_id:
+                raise HTTPException(400, "event_team_id is required for this format")
+            # Confirm this player is actually on that team.
+            members = (
+                supabase.table("event_team_members")
+                .select("player_id")
+                .eq("event_team_id", str(r.event_team_id))
+                .execute()
+                .data
+            )
+            if not any(m["player_id"] == player["id"] for m in members):
+                raise HTTPException(403, "You're not on this team for this event")
+
+            # Resume the team's existing round if one's already in progress,
+            # rather than starting a second, competing scorecard.
+            existing = (
+                supabase.table("rounds")
+                .select("*")
+                .eq("event_id", str(r.event_id))
+                .eq("event_team_id", str(r.event_team_id))
+                .is_("completed_at", "null")
+                .order("started_at", desc=True)
+                .execute()
+                .data
+            )
+            if existing:
+                return existing[0]
+
     row = supabase.table("rounds").insert(
         {
             "player_id": player["id"],
@@ -221,15 +256,34 @@ def start_round(r: RoundStartIn, player=Depends(get_current_player)):
             "tournament_id": str(r.tournament_id) if r.tournament_id else None,
             "round_type": r.round_type,
             "event_id": str(r.event_id) if r.event_id else None,
+            "event_team_id": str(r.event_team_id) if r.event_team_id else None,
         }
     ).execute().data[0]
     return row
 
 
+def _can_write_round(round_row: dict, player: dict) -> bool:
+    """A round can be written to by whoever started it — OR, for team-ball
+    rounds, by any member of that event team, since the whole point is that
+    any teammate can pick up the shared scorecard."""
+    if round_row["player_id"] == player["id"]:
+        return True
+    if round_row.get("event_team_id"):
+        members = (
+            supabase.table("event_team_members")
+            .select("player_id")
+            .eq("event_team_id", round_row["event_team_id"])
+            .execute()
+            .data
+        )
+        return any(m["player_id"] == player["id"] for m in members)
+    return False
+
+
 @app.post("/rounds/{round_id}/holes")
 def submit_hole_score(round_id: UUID, score: HoleScoreIn, player=Depends(get_current_player)):
     round_row = supabase.table("rounds").select("*").eq("id", str(round_id)).single().execute().data
-    if not round_row or round_row["player_id"] != player["id"]:
+    if not round_row or not _can_write_round(round_row, player):
         raise HTTPException(403, "Not your round")
 
     score_data = score.model_dump()
@@ -245,7 +299,7 @@ def submit_hole_score(round_id: UUID, score: HoleScoreIn, player=Depends(get_cur
 @app.post("/rounds/{round_id}/complete")
 def complete_round(round_id: UUID, player=Depends(get_current_player)):
     round_row = supabase.table("rounds").select("*").eq("id", str(round_id)).single().execute().data
-    if not round_row or round_row["player_id"] != player["id"]:
+    if not round_row or not _can_write_round(round_row, player):
         raise HTTPException(403, "Not your round")
 
     scores = supabase.table("hole_scores").select("putts").eq("round_id", str(round_id)).execute().data
@@ -1342,6 +1396,64 @@ def event_leaderboard(event_id: UUID, player=Depends(get_current_player)):
         raise HTTPException(404, "Event not found")
     if event["format_type"] not in PLAYABLE_EVENT_FORMATS:
         raise HTTPException(400, f"Live leaderboard for '{event['format_type']}' isn't built yet")
+
+    if event["format_type"] in TEAM_BALL_FORMATS:
+        # One shared round per team — the score IS the team's score, no
+        # per-hole "best of" or summing needed.
+        teams = supabase.table("event_teams").select("id, team_name").eq("event_id", str(event_id)).execute().data
+        team_leaderboard = []
+        for t in teams:
+            members = (
+                supabase.table("event_team_members")
+                .select("player_id, players(full_name)")
+                .eq("event_team_id", t["id"])
+                .execute()
+                .data
+            )
+            member_names = [m["players"]["full_name"] for m in members]
+
+            team_round = (
+                supabase.table("rounds")
+                .select("id, completed_at")
+                .eq("event_id", str(event_id))
+                .eq("event_team_id", t["id"])
+                .order("started_at", desc=True)
+                .limit(1)
+                .execute()
+                .data
+            )
+            if team_round:
+                scores = (
+                    supabase.table("hole_scores")
+                    .select("strokes, holes(par)")
+                    .eq("round_id", team_round[0]["id"])
+                    .execute()
+                    .data
+                )
+                if scores:
+                    total_strokes = sum(s["strokes"] for s in scores)
+                    total_par = sum(s["holes"]["par"] for s in scores)
+                    team_score_to_par = total_strokes - total_par
+                    holes_played = len(scores)
+                else:
+                    team_score_to_par = None
+                    holes_played = 0
+                completed = team_round[0]["completed_at"] is not None
+            else:
+                team_score_to_par = None
+                holes_played = 0
+                completed = False
+
+            team_leaderboard.append({
+                "team_name": t["team_name"],
+                "team_score_to_par": team_score_to_par,
+                "holes_played": holes_played,
+                "completed": completed,
+                "member_names": member_names,
+            })
+
+        team_leaderboard.sort(key=lambda e: (e["team_score_to_par"] is None, e["team_score_to_par"] or 0))
+        return {"format_type": event["format_type"], "leaderboard": team_leaderboard}
 
     # Every round tied to this event, one per player (a player could in
     # theory start more than one; take their most recent).

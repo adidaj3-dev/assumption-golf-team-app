@@ -205,3 +205,7 @@ create policy "anyone signed in reads event_team_members" on event_team_members
 -- team) can compute a live leaderboard from the same per-player round data
 -- every other round type already uses.
 alter table rounds add column event_id uuid references events(id);
+
+-- Phase 4: team-ball formats (scramble, alt shot) — one shared scorecard
+-- per team, resumable by any teammate.
+alter table rounds add column event_team_id uuid references event_teams(id);

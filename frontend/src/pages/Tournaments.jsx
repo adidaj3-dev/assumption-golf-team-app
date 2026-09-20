@@ -201,7 +201,8 @@ function EventDetail({ eventId, canManage, onBack }) {
   const [leaderboard, setLeaderboard] = useState(null)
   const [error, setError] = useState(null)
 
-  const PLAYABLE_FORMATS = ['stroke_individual', 'stroke_team', 'best_ball']
+  const PLAYABLE_FORMATS = ['stroke_individual', 'stroke_team', 'best_ball', 'scramble_2', 'scramble_4', 'alt_shot']
+  const TEAM_BALL_FORMATS = ['scramble_2', 'scramble_4', 'alt_shot']
 
   useEffect(() => {
     load()
@@ -304,6 +305,23 @@ function EventDetail({ eventId, canManage, onBack }) {
                 <span style={styles.leaderboardThru}>
                   {row.score_to_par == null ? '' : row.completed ? 'F' : `thru ${row.holes_played}`}
                 </span>
+              </div>
+            ))
+          ) : TEAM_BALL_FORMATS.includes(event.format_type) ? (
+            leaderboard.map((team, i) => (
+              <div key={i} style={styles.teamLeaderboardCard}>
+                <div style={styles.teamLeaderboardHeader}>
+                  <span style={styles.leaderboardRank}>{i + 1}</span>
+                  <span style={styles.leaderboardName}>{team.team_name}</span>
+                  <span style={styles.leaderboardScore}>
+                    {team.team_score_to_par == null ? 'Not started' : formatToPar(team.team_score_to_par)}
+                  </span>
+                </div>
+                <div style={styles.teamMembersLine}>
+                  {team.member_names.join(', ')}
+                  {team.team_score_to_par != null && !team.completed && ` · thru ${team.holes_played}`}
+                  {team.completed && ' · F'}
+                </div>
               </div>
             ))
           ) : (
@@ -428,6 +446,12 @@ const styles = {
     marginBottom: '0.5rem',
   },
   teamLeaderboardHeader: { display: 'grid', gridTemplateColumns: '1.5rem 1fr auto', gap: '0.6rem', alignItems: 'center' },
+  teamMembersLine: {
+    fontSize: '0.85rem',
+    color: colors.textMuted,
+    paddingLeft: '2.1rem',
+    marginTop: '0.2rem',
+  },
   teamMemberRow: {
     display: 'flex',
     justifyContent: 'space-between',

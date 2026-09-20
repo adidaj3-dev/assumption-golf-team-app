@@ -38,6 +38,20 @@ const TIER_COLORS = {
   over: '#111111',
 }
 
+const TEAM_BALL_FORMATS = ['scramble_2', 'scramble_4', 'alt_shot']
+
+function FORMAT_LABEL(value) {
+  const map = {
+    stroke_individual: 'Stroke Play — Individual',
+    stroke_team: 'Stroke Play — Team',
+    best_ball: 'Best Ball',
+    scramble_2: '2-Man Scramble',
+    scramble_4: '4-Man Scramble',
+    alt_shot: 'Alternate Shot',
+  }
+  return map[value] || value
+}
+
 function range(start, end) {
   const out = []
   for (let i = start; i <= end; i++) out.push(i)
@@ -54,6 +68,9 @@ export default function ScoreEntry() {
   const [roundType, setRoundType] = useState(null) // 'team' | 'individual' | 'qualifier' — chosen on the Play screen before picking a course
   const [tournamentEvents, setTournamentEvents] = useState(null)
   const [selectedEventId, setSelectedEventId] = useState('')
+  const [selectedEventTeamId, setSelectedEventTeamId] = useState('')
+  const [activeTeamName, setActiveTeamName] = useState('')
+  const [teamAssignmentError, setTeamAssignmentError] = useState(null)
   const [round, setRound] = useState(null)
   const [holes, setHoles] = useState([])
   const [courseName, setCourseName] = useState('')
@@ -126,6 +143,7 @@ export default function ScoreEntry() {
           course_id: selectedCourseId,
           round_type: roundType,
           event_id: roundType === 'tournament' ? selectedEventId : null,
+          event_team_id: roundType === 'tournament' && selectedEventTeamId ? selectedEventTeamId : null,
         }),
       })
 
@@ -271,7 +289,7 @@ export default function ScoreEntry() {
         </div>
 
         <div style={styles.playerCourseHeader}>
-          <div style={styles.playerNameHeader}>{player.full_name}</div>
+          <div style={styles.playerNameHeader}>{activeTeamName || player.full_name}</div>
           <div style={styles.courseNameHeader}>{courseName}</div>
         </div>
 
@@ -335,7 +353,7 @@ export default function ScoreEntry() {
       <div style={styles.tabBar}>
         <button
           style={{ ...styles.tabBtn, ...(tab === 'play' ? styles.tabBtnActive : {}) }}
-          onClick={() => { setTab('play'); setRoundType(null); setSelectedEventId('') }}
+          onClick={() => { setTab('play'); setRoundType(null); setSelectedEventId(''); setSelectedEventTeamId(''); setActiveTeamName(''); setTeamAssignmentError(null) }}
         >
           Play
         </button>
@@ -426,7 +444,18 @@ export default function ScoreEntry() {
 
       {tab === 'play' && roundType === 'tournament' && (
         <div style={styles.page}>
-          <button style={styles.linkBtn} onClick={() => { setRoundType(null); setSelectedEventId('') }}>← Back</button>
+          <button
+            style={styles.linkBtn}
+            onClick={() => {
+              setRoundType(null)
+              setSelectedEventId('')
+              setSelectedEventTeamId('')
+              setActiveTeamName('')
+              setTeamAssignmentError(null)
+            }}
+          >
+            ← Back
+          </button>
           <h2>Tournament</h2>
 
           {!tournamentEvents ? (
@@ -434,7 +463,7 @@ export default function ScoreEntry() {
           ) : (
             (() => {
               const playable = tournamentEvents.filter((e) =>
-                ['stroke_individual', 'stroke_team', 'best_ball'].includes(e.format_type)
+                ['stroke_individual', 'stroke_team', 'best_ball', ...TEAM_BALL_FORMATS].includes(e.format_type)
               )
               if (playable.length === 0) {
                 return <p>No tournament events set up for play yet — other formats are coming in a later update.</p>
@@ -443,14 +472,33 @@ export default function ScoreEntry() {
                 <button
                   key={ev.id}
                   style={styles.roundTypeBtn}
-                  onClick={() => {
+                  onClick={async () => {
                     setSelectedEventId(ev.id)
+                    setSelectedEventTeamId('')
+                    setTeamAssignmentError(null)
                     if (ev.course_id) setSelectedCourseId(ev.course_id)
+
+                    if (TEAM_BALL_FORMATS.includes(ev.format_type)) {
+                      try {
+                        const detail = await apiCall(`/events/${ev.id}`)
+                        const myTeam = detail.teams.find((t) =>
+                          t.members.some((m) => m.player_id === player.id)
+                        )
+                        if (myTeam) {
+                          setSelectedEventTeamId(myTeam.id)
+                          setActiveTeamName(myTeam.team_name)
+                        } else {
+                          setTeamAssignmentError("You're not assigned to a team for this event yet — ask your coach or captain.")
+                        }
+                      } catch (err) {
+                        setError(err.message)
+                      }
+                    }
                   }}
                 >
                   <div style={styles.roundTypeName}>{ev.name}</div>
                   <div style={styles.roundTypeDesc}>
-                    {ev.format_type === 'stroke_individual' ? 'Stroke Play — Individual' : ev.format_type === 'best_ball' ? 'Best Ball' : 'Stroke Play — Team'}
+                    {FORMAT_LABEL(ev.format_type)}
                     {ev.courses && ` · ${ev.courses.name}`}
                   </div>
                 </button>
@@ -458,7 +506,11 @@ export default function ScoreEntry() {
             })()
           )}
 
-          {selectedEventId && (
+          {selectedEventId && teamAssignmentError && (
+            <p style={styles.error}>{teamAssignmentError}</p>
+          )}
+
+          {selectedEventId && !teamAssignmentError && (
             <>
               {!courses.find((c) => c.id === selectedCourseId) && courses.length > 0 && (
                 <>
