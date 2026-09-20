@@ -53,6 +53,7 @@ export default function ScoreEntry() {
   const [roundType, setRoundType] = useState(null) // 'team' | 'individual' | 'qualifier' — chosen on the Play screen before picking a course
   const [round, setRound] = useState(null)
   const [holes, setHoles] = useState([])
+  const [courseName, setCourseName] = useState('')
   const [holeIndex, setHoleIndex] = useState(0)
   const [form, setForm] = useState({ strokes: null, putts: null, fairway_hit: null, gir: null })
   const [error, setError] = useState(null)
@@ -122,6 +123,7 @@ export default function ScoreEntry() {
       })
 
       setHoles(sortedHoles)
+      setCourseName(course.name)
       setHoleIndex(0)
       setRound(r)
     } catch (err) {
@@ -261,6 +263,11 @@ export default function ScoreEntry() {
           <button style={styles.smallBtnDanger} onClick={endRoundEarly}>End Round</button>
         </div>
 
+        <div style={styles.playerCourseHeader}>
+          <div style={styles.playerNameHeader}>{player.full_name}</div>
+          <div style={styles.courseNameHeader}>{courseName}</div>
+        </div>
+
         <div style={styles.holeHeader}>
           <div>
             <h2 style={styles.holeNumber}>Hole {hole.hole_number}</h2>
@@ -389,7 +396,7 @@ export default function ScoreEntry() {
             <div style={styles.roundTypeDesc}>Coming soon</div>
           </button>
 
-          {player.role === 'coach' && (
+          {(player.role === 'coach' || player.role === 'captain') && (
             <button style={styles.linkBtn} onClick={() => setShowCourseSetup(true)}>
               + Add a new course
             </button>
@@ -413,7 +420,7 @@ export default function ScoreEntry() {
           </h2>
 
           {courses.length === 0 ? (
-            <p>No courses yet. {player.role === 'coach' ? 'Add one from the previous screen.' : 'Ask your coach to add one.'}</p>
+            <p>No courses yet. {player.role === 'coach' || player.role === 'captain' ? 'Add one from the previous screen.' : 'Ask your coach to add one.'}</p>
           ) : (
             <>
               <label style={styles.label}>Course</label>
@@ -514,6 +521,9 @@ function ToggleRow({ label, value, onChange }) {
 }
 
 const styles = {
+  playerCourseHeader: { marginBottom: '0.75rem' },
+  playerNameHeader: { fontWeight: 'bold', color: '#111', fontSize: '1.1rem' },
+  courseNameHeader: { color: '#004b87', fontSize: '0.9rem', marginTop: '0.1rem' },
   holeHeader: {
     display: 'flex',
     justifyContent: 'space-between',

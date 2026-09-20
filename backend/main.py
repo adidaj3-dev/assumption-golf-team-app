@@ -91,8 +91,8 @@ class TournamentIn(BaseModel):
 
 @app.post("/courses")
 def create_course(course: CourseIn, player=Depends(get_current_player)):
-    if player["role"] != "coach":
-        raise HTTPException(403, "Only coaches can create courses")
+    if player["role"] not in ("coach", "captain"):
+        raise HTTPException(403, "Only coaches and captains can create courses")
     if len(course.holes) not in (9, 18):
         raise HTTPException(400, "Course must have 9 or 18 holes")
 
@@ -433,7 +433,7 @@ def team_stats(player=Depends(get_current_player)):
     all_players = (
         supabase.table("players")
         .select("id, full_name, role")
-        .eq("role", "player")  # never rank a coach among the roster
+        .neq("role", "coach")  # players and captains both count as roster members; never a coach
         .order("full_name")
         .execute()
         .data
@@ -1048,7 +1048,7 @@ def standings(team: str, player=Depends(get_current_player)):
         supabase.table("players")
         .select("id, full_name")
         .eq("team", team)
-        .eq("role", "player")
+        .neq("role", "coach")
         .execute()
         .data
     )
@@ -1108,7 +1108,7 @@ def combine_standings(team: str, player=Depends(get_current_player)):
         supabase.table("players")
         .select("id, full_name")
         .eq("team", team)
-        .eq("role", "player")
+        .neq("role", "coach")
         .execute()
         .data
     )

@@ -9,7 +9,7 @@
 create table players (
     id uuid primary key references auth.users(id) on delete cascade,
     full_name text not null,
-    role text not null default 'player' check (role in ('player', 'coach')),
+    role text not null default 'player' check (role in ('player', 'captain', 'coach')),
     created_at timestamptz default now()
 );
 
@@ -138,3 +138,15 @@ create policy "players manage own combine_sessions" on combine_sessions
 
 create policy "coaches read all combine_sessions" on combine_sessions
     for select using (is_coach());
+
+-- Men's/Women's team split, for the Individual Standings tab. Set at
+-- signup for new players; existing players need this set manually once
+-- (Table Editor → players → team column) since it didn't exist before.
+alter table players add column team text check (team in ('men', 'women'));
+
+-- What kind of round this is. 'team' rounds are the only ones that count
+-- toward season scoring average / standings — and only once COMPLETE (9 or
+-- 18 holes, checked in the backend against the course's actual hole count).
+-- 'tournament' is stored but not yet wired up to real functionality.
+alter table rounds add column round_type text not null default 'individual'
+    check (round_type in ('team', 'individual', 'qualifier', 'tournament'));

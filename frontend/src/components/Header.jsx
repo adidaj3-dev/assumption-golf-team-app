@@ -1,5 +1,37 @@
 import { colors, fonts, LOGO_URL } from '../theme.js'
 
+// Original monogram — not a reproduction of Assumption's official trademarked
+// logo. Swap LOGO_URL in theme.js to the real file (from the Office of
+// Athletic Communications download page) whenever you have it, and this
+// falls away automatically.
+function Monogram() {
+  return (
+    <svg width="42" height="42" viewBox="0 0 100 100" style={{ flexShrink: 0 }}>
+      <path
+        d="M50 4 L92 20 V50 C92 74 74 90 50 97 C26 90 8 74 8 50 V20 Z"
+        fill={colors.gray}
+        stroke={colors.white}
+        strokeWidth="2"
+      />
+      <path
+        d="M50 12 L85 26 V50 C85 70 70 83 50 89 C30 83 15 70 15 50 V26 Z"
+        fill={colors.primary}
+      />
+      <text
+        x="50"
+        y="68"
+        textAnchor="middle"
+        fontFamily="Georgia, 'Times New Roman', serif"
+        fontWeight="bold"
+        fontSize="52"
+        fill={colors.white}
+      >
+        A
+      </text>
+    </svg>
+  )
+}
+
 export default function Header() {
   return (
     <div style={styles.bar}>
@@ -7,7 +39,7 @@ export default function Header() {
         {LOGO_URL ? (
           <img src={LOGO_URL} alt="Assumption Greyhounds" style={styles.logoImg} />
         ) : (
-          <div style={styles.badge}>AU</div>
+          <Monogram />
         )}
         <div>
           <div style={styles.title}>ASSUMPTION GOLF</div>
@@ -30,20 +62,6 @@ const styles = {
     display: 'flex',
     alignItems: 'center',
     gap: '0.75rem',
-  },
-  badge: {
-    width: 42,
-    height: 42,
-    borderRadius: '50%',
-    background: colors.gray,
-    color: colors.primaryDark,
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    fontWeight: 'bold',
-    fontFamily: fonts.heading,
-    fontSize: '1.1rem',
-    flexShrink: 0,
   },
   logoImg: {
     width: 42,
