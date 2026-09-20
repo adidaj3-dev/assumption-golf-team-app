@@ -433,6 +433,7 @@ def team_stats(player=Depends(get_current_player)):
     all_players = (
         supabase.table("players")
         .select("id, full_name, role")
+        .eq("role", "player")  # never rank a coach among the roster
         .order("full_name")
         .execute()
         .data
@@ -827,14 +828,21 @@ def player_combines(player_id: UUID, combine_type: Optional[str] = None, player=
 def team_players(player=Depends(get_current_player)):
     """Full roster — any signed-in player can call this (not coach-only).
     Used for the 'who is this combine for' picker so teammates can log
-    scores for each other during group practice."""
-    return (
+    scores for each other during group practice.
+
+    Players never see the coach in this list. The coach DOES see themself
+    (as well as every player) so they can still log their own combines/rounds
+    — they just never show up in a PLAYER's view of the roster."""
+    all_rows = (
         supabase.table("players")
         .select("id, full_name, role")
         .order("full_name")
         .execute()
         .data
     )
+    if player["role"] == "coach":
+        return all_rows
+    return [p for p in all_rows if p["role"] != "coach"]
 
 
 @app.get("/coach/live-rounds")
