@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { supabase } from '../supabaseClient.js'
 import Scorecard from './Scorecard.jsx'
 import TeamRoster from './TeamRoster.jsx'
+import CombinesDashboard from './CombinesDashboard.jsx'
 
 const API_BASE = import.meta.env.VITE_API_BASE
 
@@ -33,6 +34,9 @@ export default function Stats({ player }) {
   }
   if (view === 'roster') {
     return <TeamRoster onBack={() => setView('home')} />
+  }
+  if (view === 'combines') {
+    return <CombinesDashboard onBack={() => setView('home')} />
   }
 
   if (error) return <div style={styles.page}><p style={styles.error}>{error}</p></div>
@@ -123,6 +127,10 @@ export default function Stats({ player }) {
         <button style={styles.navBtn} onClick={() => setView('individualRounds')}>
           <div style={styles.navBtnTitle}>Individual Rounds</div>
           <div style={styles.navBtnSub}>{individualRounds.length} · practice only</div>
+        </button>
+        <button style={styles.navBtn} onClick={() => setView('combines')}>
+          <div style={styles.navBtnTitle}>Combine Stats</div>
+          <div style={styles.navBtnSub}>Every player vs. D1/PGA benchmarks</div>
         </button>
         <button style={styles.navBtn} onClick={() => setView('roster')}>
           <div style={styles.navBtnTitle}>Team Roster</div>

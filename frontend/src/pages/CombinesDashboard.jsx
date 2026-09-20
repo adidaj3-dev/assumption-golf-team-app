@@ -14,7 +14,7 @@ async function authedFetch(path) {
   return res.json()
 }
 
-export default function CombinesDashboard() {
+export default function CombinesDashboard({ onBack }) {
   const [view, setView] = useState('players') // 'players' or 'detail'
   const [players, setPlayers] = useState(null)
   const [selectedPlayer, setSelectedPlayer] = useState(null)
@@ -104,7 +104,8 @@ export default function CombinesDashboard() {
 
   return (
     <div style={styles.page}>
-      <h2>Combines</h2>
+      {onBack && <button style={styles.linkBtn} onClick={onBack}>← Back to stats</button>}
+      <h2>Combine Stats</h2>
       <p style={styles.subtitle}>Tap a player to see all their combine results vs. D1/PGA benchmarks</p>
 
       {players.map((p) => (
