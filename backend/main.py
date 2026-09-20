@@ -3,6 +3,7 @@ Golf Team App — Phase 1 backend
 Run with: uvicorn main:app --reload
 """
 import os
+import random
 from typing import Optional
 from uuid import UUID
 
@@ -1126,3 +1127,188 @@ def combine_standings(team: str, player=Depends(get_current_player)):
         e["tier"] = _standings_tier(team, i + 1)
 
     return entries
+
+
+# ---------------------------------------------------------------------------
+# Tournament Events — Phase 1: event setup + random team/pairing generator.
+# Actual per-format scoring/live leaderboards come in later phases; for now
+# this handles creating an event and assigning players into teams/pairings.
+# ---------------------------------------------------------------------------
+
+FORMAT_LABELS = {
+    "stroke_individual": "Stroke Play — Individual",
+    "stroke_team": "Stroke Play — Team",
+    "best_ball": "Best Ball",
+    "scramble_2": "2-Man Scramble",
+    "scramble_4": "4-Man Scramble",
+    "alt_shot": "Alternate Shot",
+    "shamble": "Shamble",
+    "chapman": "Chapman (Pinehurst)",
+    "skins": "Skins",
+    "stableford": "Stableford",
+    "greyhound_cup": "Greyhound Cup",
+    "wolf": "Wolf",
+    "match_play": "Match Play",
+}
+
+VALID_FORMATS = set(FORMAT_LABELS.keys())
+
+
+class EventIn(BaseModel):
+    name: str
+    event_date: Optional[str] = None  # "YYYY-MM-DD"
+    course_id: Optional[UUID] = None
+    format_type: str
+    num_holes: int = 18
+
+
+class GenerateTeamsIn(BaseModel):
+    player_ids: list[UUID]
+    group_size: int
+
+
+class TeamIn(BaseModel):
+    team_name: str
+    player_ids: list[UUID]
+
+
+class SaveTeamsIn(BaseModel):
+    teams: list[TeamIn]
+
+
+@app.get("/event-formats")
+def list_event_formats():
+    """Every supported tournament format, for the event-creation dropdown."""
+    return [{"value": k, "label": v} for k, v in FORMAT_LABELS.items()]
+
+
+@app.post("/events")
+def create_event(event: EventIn, player=Depends(get_current_player)):
+    if player["role"] not in ("coach", "captain"):
+        raise HTTPException(403, "Only coaches and captains can create events")
+    if event.format_type not in VALID_FORMATS:
+        raise HTTPException(400, f"Invalid format_type: {event.format_type}")
+    if event.num_holes not in (6, 9, 18, 36):
+        raise HTTPException(400, "num_holes must be 6, 9, 18, or 36")
+
+    row = supabase.table("events").insert({
+        "name": event.name,
+        "event_date": event.event_date,
+        "course_id": str(event.course_id) if event.course_id else None,
+        "format_type": event.format_type,
+        "num_holes": event.num_holes,
+        "created_by": player["id"],
+    }).execute().data[0]
+    return row
+
+
+@app.get("/events")
+def list_events(player=Depends(get_current_player)):
+    """Every event, newest first — visible to the whole team."""
+    return (
+        supabase.table("events")
+        .select("*, courses(name)")
+        .order("created_at", desc=True)
+        .execute()
+        .data
+    )
+
+
+@app.get("/events/{event_id}")
+def get_event(event_id: UUID, player=Depends(get_current_player)):
+    event = supabase.table("events").select("*, courses(name)").eq("id", str(event_id)).single().execute().data
+    if not event:
+        raise HTTPException(404, "Event not found")
+
+    teams = supabase.table("event_teams").select("id, team_name").eq("event_id", str(event_id)).execute().data
+    for t in teams:
+        members = (
+            supabase.table("event_team_members")
+            .select("player_id, players(full_name)")
+            .eq("event_team_id", t["id"])
+            .execute()
+            .data
+        )
+        t["members"] = [{"player_id": m["player_id"], "full_name": m["players"]["full_name"]} for m in members]
+
+    event["teams"] = teams
+    return event
+
+
+@app.post("/events/{event_id}/generate-teams")
+def generate_teams(event_id: UUID, body: GenerateTeamsIn, player=Depends(get_current_player)):
+    """Randomly shuffles the given players into teams/pairings of the given
+    size, replacing any teams already saved for this event. If the player
+    count doesn't divide evenly, the last team just gets the remainder."""
+    if player["role"] not in ("coach", "captain"):
+        raise HTTPException(403, "Only coaches and captains can generate teams")
+    if body.group_size < 1:
+        raise HTTPException(400, "group_size must be at least 1")
+
+    event = supabase.table("events").select("id").eq("id", str(event_id)).single().execute().data
+    if not event:
+        raise HTTPException(404, "Event not found")
+
+    # Clear any existing teams for this event first.
+    existing = supabase.table("event_teams").select("id").eq("event_id", str(event_id)).execute().data
+    for t in existing:
+        supabase.table("event_teams").delete().eq("id", t["id"]).execute()
+
+    shuffled = [str(pid) for pid in body.player_ids]
+    random.shuffle(shuffled)
+
+    groups = [shuffled[i:i + body.group_size] for i in range(0, len(shuffled), body.group_size)]
+
+    saved_teams = []
+    for i, group in enumerate(groups):
+        team_row = supabase.table("event_teams").insert({
+            "event_id": str(event_id),
+            "team_name": f"Team {i + 1}",
+        }).execute().data[0]
+        for pid in group:
+            supabase.table("event_team_members").insert({
+                "event_team_id": team_row["id"],
+                "player_id": pid,
+            }).execute()
+        saved_teams.append({"id": team_row["id"], "team_name": team_row["team_name"], "player_ids": group})
+
+    return saved_teams
+
+
+@app.put("/events/{event_id}/teams")
+def save_teams(event_id: UUID, body: SaveTeamsIn, player=Depends(get_current_player)):
+    """Manually save/overwrite an event's teams — used after a coach tweaks
+    the randomly-generated groupings."""
+    if player["role"] not in ("coach", "captain"):
+        raise HTTPException(403, "Only coaches and captains can edit teams")
+
+    event = supabase.table("events").select("id").eq("id", str(event_id)).single().execute().data
+    if not event:
+        raise HTTPException(404, "Event not found")
+
+    existing = supabase.table("event_teams").select("id").eq("event_id", str(event_id)).execute().data
+    for t in existing:
+        supabase.table("event_teams").delete().eq("id", t["id"]).execute()
+
+    saved_teams = []
+    for team in body.teams:
+        team_row = supabase.table("event_teams").insert({
+            "event_id": str(event_id),
+            "team_name": team.team_name,
+        }).execute().data[0]
+        for pid in team.player_ids:
+            supabase.table("event_team_members").insert({
+                "event_team_id": team_row["id"],
+                "player_id": str(pid),
+            }).execute()
+        saved_teams.append({"id": team_row["id"], "team_name": team_row["team_name"]})
+
+    return saved_teams
+
+
+@app.delete("/events/{event_id}")
+def delete_event(event_id: UUID, player=Depends(get_current_player)):
+    if player["role"] not in ("coach", "captain"):
+        raise HTTPException(403, "Only coaches and captains can delete events")
+    supabase.table("events").delete().eq("id", str(event_id)).execute()
+    return {"deleted": True}

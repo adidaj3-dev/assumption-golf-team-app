@@ -150,3 +150,53 @@ alter table players add column team text check (team in ('men', 'women'));
 -- 'tournament' is stored but not yet wired up to real functionality.
 alter table rounds add column round_type text not null default 'individual'
     check (round_type in ('team', 'individual', 'qualifier', 'tournament'));
+
+-- Captain role, added on top of player/coach.
+alter table players drop constraint players_role_check;
+alter table players add constraint players_role_check
+    check (role in ('player', 'captain', 'coach'));
+
+-- Tournament formats system (Phase 1: event setup + team/pairing generator).
+-- Actual play/scoring for each format comes in later phases — this is just
+-- the event shell and its team assignments.
+create table events (
+    id uuid primary key default gen_random_uuid(),
+    name text not null,
+    event_date date,
+    course_id uuid references courses(id),
+    format_type text not null check (format_type in (
+        'stroke_individual', 'stroke_team', 'best_ball', 'scramble_2', 'scramble_4',
+        'alt_shot', 'shamble', 'chapman', 'skins', 'stableford',
+        'greyhound_cup', 'wolf', 'match_play'
+    )),
+    num_holes int not null default 18 check (num_holes in (6, 9, 18, 36)),
+    status text not null default 'setup' check (status in ('setup', 'active', 'completed')),
+    created_by uuid references players(id),
+    created_at timestamptz default now()
+);
+
+create table event_teams (
+    id uuid primary key default gen_random_uuid(),
+    event_id uuid not null references events(id) on delete cascade,
+    team_name text not null
+);
+
+create table event_team_members (
+    id uuid primary key default gen_random_uuid(),
+    event_team_id uuid not null references event_teams(id) on delete cascade,
+    player_id uuid not null references players(id)
+);
+
+alter table events enable row level security;
+alter table event_teams enable row level security;
+alter table event_team_members enable row level security;
+
+-- Everyone on the team can see events and team assignments (same
+-- transparency model as everything else); only the backend (service role,
+-- gated in Python to coach/captain) ever writes them.
+create policy "anyone signed in reads events" on events
+    for select using (auth.role() = 'authenticated');
+create policy "anyone signed in reads event_teams" on event_teams
+    for select using (auth.role() = 'authenticated');
+create policy "anyone signed in reads event_team_members" on event_team_members
+    for select using (auth.role() = 'authenticated');

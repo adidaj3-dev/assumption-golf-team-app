@@ -7,6 +7,7 @@ import Stats from './Stats.jsx'
 import CoachDashboard from './CoachDashboard.jsx'
 import Practice from './Practice.jsx'
 import Standings from './Standings.jsx'
+import Tournaments from './Tournaments.jsx'
 
 const API_BASE = import.meta.env.VITE_API_BASE
 
@@ -360,6 +361,12 @@ export default function ScoreEntry() {
         >
           {player.role === 'coach' ? 'Standings' : 'Individual Standings'}
         </button>
+        <button
+          style={{ ...styles.tabBtn, ...(tab === 'tournaments' ? styles.tabBtnActive : {}) }}
+          onClick={() => setTab('tournaments')}
+        >
+          Tournaments
+        </button>
         {player.role === 'coach' && (
           <button
             style={{ ...styles.tabBtn, ...(tab === 'team' ? styles.tabBtnActive : {}) }}
@@ -373,6 +380,7 @@ export default function ScoreEntry() {
       {tab === 'stats' && <Stats player={player} />}
       {tab === 'practice' && <Practice player={player} />}
       {tab === 'standings' && <Standings />}
+      {tab === 'tournaments' && <Tournaments player={player} />}
       {tab === 'team' && player.role === 'coach' && <CoachDashboard />}
       {tab === 'play' && !roundType && (
         <div style={styles.page}>
