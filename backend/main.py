@@ -69,6 +69,7 @@ class RoundStartIn(BaseModel):
     course_id: UUID
     tournament_id: Optional[UUID] = None
     round_type: str = "individual"  # 'team' | 'individual' | 'qualifier' | 'tournament'
+    event_id: Optional[UUID] = None  # set when round_type == 'tournament'
 
 
 class HoleScoreIn(BaseModel):
@@ -196,16 +197,30 @@ def get_public_leaderboard(slug: str):
 VALID_ROUND_TYPES = {"team", "individual", "qualifier", "tournament"}
 
 
+PHASE2_EVENT_FORMATS = {"stroke_individual", "stroke_team"}  # only these are playable so far
+
+
 @app.post("/rounds/start")
 def start_round(r: RoundStartIn, player=Depends(get_current_player)):
     if r.round_type not in VALID_ROUND_TYPES:
         raise HTTPException(400, f"Invalid round_type: {r.round_type}")
+
+    if r.round_type == "tournament":
+        if not r.event_id:
+            raise HTTPException(400, "event_id is required for a tournament round")
+        event = supabase.table("events").select("format_type").eq("id", str(r.event_id)).single().execute().data
+        if not event:
+            raise HTTPException(404, "Event not found")
+        if event["format_type"] not in PHASE2_EVENT_FORMATS:
+            raise HTTPException(400, f"'{event['format_type']}' rounds aren't playable yet — coming in a later update")
+
     row = supabase.table("rounds").insert(
         {
             "player_id": player["id"],
             "course_id": str(r.course_id),
             "tournament_id": str(r.tournament_id) if r.tournament_id else None,
             "round_type": r.round_type,
+            "event_id": str(r.event_id) if r.event_id else None,
         }
     ).execute().data[0]
     return row
@@ -1312,3 +1327,98 @@ def delete_event(event_id: UUID, player=Depends(get_current_player)):
         raise HTTPException(403, "Only coaches and captains can delete events")
     supabase.table("events").delete().eq("id", str(event_id)).execute()
     return {"deleted": True}
+
+
+# ---------------------------------------------------------------------------
+# Phase 2: live leaderboard for stroke play events (individual and team).
+# Built entirely from the same per-player round/hole_scores data every other
+# round type already produces — no separate scoring pipeline needed.
+# ---------------------------------------------------------------------------
+
+@app.get("/events/{event_id}/leaderboard")
+def event_leaderboard(event_id: UUID, player=Depends(get_current_player)):
+    event = supabase.table("events").select("*").eq("id", str(event_id)).single().execute().data
+    if not event:
+        raise HTTPException(404, "Event not found")
+    if event["format_type"] not in PHASE2_EVENT_FORMATS:
+        raise HTTPException(400, f"Live leaderboard for '{event['format_type']}' isn't built yet")
+
+    # Every round tied to this event, one per player (a player could in
+    # theory start more than one; take their most recent).
+    rounds = (
+        supabase.table("rounds")
+        .select("id, player_id, completed_at, players(full_name)")
+        .eq("event_id", str(event_id))
+        .order("started_at", desc=True)
+        .execute()
+        .data
+    )
+    latest_round_by_player = {}
+    for r in rounds:
+        if r["player_id"] not in latest_round_by_player:
+            latest_round_by_player[r["player_id"]] = r
+
+    def score_for_round(round_id):
+        scores = (
+            supabase.table("hole_scores")
+            .select("strokes, holes(par)")
+            .eq("round_id", round_id)
+            .execute()
+            .data
+        )
+        if not scores:
+            return None, 0
+        total_strokes = sum(s["strokes"] for s in scores)
+        total_par = sum(s["holes"]["par"] for s in scores)
+        return total_strokes - total_par, len(scores)
+
+    if event["format_type"] == "stroke_individual":
+        leaderboard = []
+        for pid, r in latest_round_by_player.items():
+            score_to_par, holes_played = score_for_round(r["id"])
+            leaderboard.append({
+                "player_name": r["players"]["full_name"],
+                "score_to_par": score_to_par,
+                "holes_played": holes_played,
+                "completed": r["completed_at"] is not None,
+            })
+        leaderboard.sort(key=lambda e: (e["score_to_par"] is None, e["score_to_par"]))
+        return {"format_type": event["format_type"], "leaderboard": leaderboard}
+
+    # stroke_team: sum each team's members' individual scores-to-par
+    teams = supabase.table("event_teams").select("id, team_name").eq("event_id", str(event_id)).execute().data
+    team_leaderboard = []
+    for t in teams:
+        members = (
+            supabase.table("event_team_members")
+            .select("player_id, players(full_name)")
+            .eq("event_team_id", t["id"])
+            .execute()
+            .data
+        )
+        member_rows = []
+        team_total = 0
+        any_score = False
+        for m in members:
+            r = latest_round_by_player.get(m["player_id"])
+            if not r:
+                member_rows.append({"player_name": m["players"]["full_name"], "score_to_par": None, "holes_played": 0})
+                continue
+            score_to_par, holes_played = score_for_round(r["id"])
+            member_rows.append({
+                "player_name": m["players"]["full_name"],
+                "score_to_par": score_to_par,
+                "holes_played": holes_played,
+            })
+            if score_to_par is not None:
+                team_total += score_to_par
+                any_score = True
+
+        team_leaderboard.append({
+            "team_name": t["team_name"],
+            "team_score_to_par": team_total if any_score else None,
+            "members": member_rows,
+        })
+
+    team_leaderboard.sort(key=lambda e: (e["team_score_to_par"] is None, e["team_score_to_par"] or 0))
+    return {"format_type": event["format_type"], "leaderboard": team_leaderboard}

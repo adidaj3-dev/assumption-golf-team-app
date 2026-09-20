@@ -198,12 +198,27 @@ function EventDetail({ eventId, canManage, onBack }) {
   const [roster, setRoster] = useState(null)
   const [selectedPlayerIds, setSelectedPlayerIds] = useState([])
   const [groupSize, setGroupSize] = useState(2)
+  const [leaderboard, setLeaderboard] = useState(null)
   const [error, setError] = useState(null)
+
+  const PLAYABLE_FORMATS = ['stroke_individual', 'stroke_team']
 
   useEffect(() => {
     load()
     authedFetch('/team/players').then(setRoster).catch((err) => setError(err.message))
   }, [eventId])
+
+  useEffect(() => {
+    if (!event || !PLAYABLE_FORMATS.includes(event.format_type)) return
+    loadLeaderboard()
+    const interval = setInterval(loadLeaderboard, 10000)
+    return () => clearInterval(interval)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [event?.format_type])
+
+  function loadLeaderboard() {
+    authedFetch(`/events/${eventId}/leaderboard`).then((res) => setLeaderboard(res.leaderboard)).catch(() => {})
+  }
 
   function load() {
     authedFetch(`/events/${eventId}`).then(setEvent).catch((err) => setError(err.message))
@@ -255,6 +270,8 @@ function EventDetail({ eventId, canManage, onBack }) {
   if (error) return <div style={styles.page}><p style={styles.error}>{error}</p></div>
   if (!event) return <div style={styles.page}><p>Loading…</p></div>
 
+  const isPlayable = PLAYABLE_FORMATS.includes(event.format_type)
+
   return (
     <div style={styles.page}>
       <button style={styles.linkBtn} onClick={onBack}>← Back to Tournaments</button>
@@ -264,6 +281,52 @@ function EventDetail({ eventId, canManage, onBack }) {
         {event.courses && ` · ${event.courses.name}`}
         {event.event_date && ` · ${event.event_date}`}
       </p>
+
+      {isPlayable && (
+        <p style={styles.hint}>Players enter their scores from the Play tab → Tournament → {event.name}.</p>
+      )}
+
+      {isPlayable && (
+        <>
+          <h3 style={styles.sectionTitle}>Live Leaderboard</h3>
+          {!leaderboard ? (
+            <p>Loading…</p>
+          ) : leaderboard.length === 0 ? (
+            <p style={styles.muted}>No one has started a round for this event yet.</p>
+          ) : event.format_type === 'stroke_individual' ? (
+            leaderboard.map((row, i) => (
+              <div key={i} style={styles.leaderboardRow}>
+                <span style={styles.leaderboardRank}>{i + 1}</span>
+                <span style={styles.leaderboardName}>{row.player_name}</span>
+                <span style={styles.leaderboardScore}>
+                  {row.score_to_par == null ? 'Not started' : formatToPar(row.score_to_par)}
+                </span>
+                <span style={styles.leaderboardThru}>
+                  {row.score_to_par == null ? '' : row.completed ? 'F' : `thru ${row.holes_played}`}
+                </span>
+              </div>
+            ))
+          ) : (
+            leaderboard.map((team, i) => (
+              <div key={i} style={styles.teamLeaderboardCard}>
+                <div style={styles.teamLeaderboardHeader}>
+                  <span style={styles.leaderboardRank}>{i + 1}</span>
+                  <span style={styles.leaderboardName}>{team.team_name}</span>
+                  <span style={styles.leaderboardScore}>
+                    {team.team_score_to_par == null ? '—' : formatToPar(team.team_score_to_par)}
+                  </span>
+                </div>
+                {team.members.map((m, j) => (
+                  <div key={j} style={styles.teamMemberRow}>
+                    <span>{m.player_name}</span>
+                    <span>{m.score_to_par == null ? 'Not started' : formatToPar(m.score_to_par)}</span>
+                  </div>
+                ))}
+              </div>
+            ))
+          )}
+        </>
+      )}
 
       {canManage && (
         <>
@@ -327,6 +390,11 @@ function EventDetail({ eventId, canManage, onBack }) {
   )
 }
 
+function formatToPar(n) {
+  if (n === 0) return 'E'
+  return n > 0 ? `+${n}` : `${n}`
+}
+
 const styles = {
   page: {
     fontFamily: 'system-ui, sans-serif',
@@ -338,6 +406,35 @@ const styles = {
     boxShadow: '0 2px 10px rgba(0,0,0,0.06)',
   },
   sectionTitle: { marginTop: '1.75rem', marginBottom: '0.5rem' },
+  hint: { fontSize: '0.85rem', color: colors.textMuted, marginTop: '0.5rem' },
+  leaderboardRow: {
+    display: 'grid',
+    gridTemplateColumns: '1.5rem 1fr auto auto',
+    gap: '0.6rem',
+    alignItems: 'center',
+    padding: '0.6rem 0.75rem',
+    background: colors.grayLight,
+    borderRadius: '0.5rem',
+    marginBottom: '0.4rem',
+  },
+  leaderboardRank: { color: '#888', fontWeight: 'bold', fontSize: '0.9rem' },
+  leaderboardName: { fontWeight: 600 },
+  leaderboardScore: { fontWeight: 'bold', color: colors.primary },
+  leaderboardThru: { fontSize: '0.8rem', color: colors.textMuted },
+  teamLeaderboardCard: {
+    background: colors.grayLight,
+    borderRadius: '0.6rem',
+    padding: '0.75rem 1rem',
+    marginBottom: '0.5rem',
+  },
+  teamLeaderboardHeader: { display: 'grid', gridTemplateColumns: '1.5rem 1fr auto', gap: '0.6rem', alignItems: 'center' },
+  teamMemberRow: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    fontSize: '0.85rem',
+    color: colors.textMuted,
+    padding: '0.25rem 0 0 2.1rem',
+  },
   muted: { color: colors.textMuted },
   label: { display: 'block', marginTop: '1rem', fontWeight: 600 },
   input: { width: '100%', padding: '0.75rem', fontSize: '1.05rem', marginTop: '0.25rem', boxSizing: 'border-box' },

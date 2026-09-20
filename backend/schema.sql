@@ -200,3 +200,8 @@ create policy "anyone signed in reads event_teams" on event_teams
     for select using (auth.role() = 'authenticated');
 create policy "anyone signed in reads event_team_members" on event_team_members
     for select using (auth.role() = 'authenticated');
+
+-- Phase 2: tie a round to a tournament event so stroke play (individual and
+-- team) can compute a live leaderboard from the same per-player round data
+-- every other round type already uses.
+alter table rounds add column event_id uuid references events(id);

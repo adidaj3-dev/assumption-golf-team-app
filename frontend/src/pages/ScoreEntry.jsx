@@ -52,6 +52,8 @@ export default function ScoreEntry() {
   const [showCourseSetup, setShowCourseSetup] = useState(false)
   const [tab, setTab] = useState('play') // 'play', 'stats', 'practice', 'standings', 'team' (coach only), 'combines' (coach only)
   const [roundType, setRoundType] = useState(null) // 'team' | 'individual' | 'qualifier' — chosen on the Play screen before picking a course
+  const [tournamentEvents, setTournamentEvents] = useState(null)
+  const [selectedEventId, setSelectedEventId] = useState('')
   const [round, setRound] = useState(null)
   const [holes, setHoles] = useState([])
   const [courseName, setCourseName] = useState('')
@@ -120,7 +122,11 @@ export default function ScoreEntry() {
 
       const r = await apiCall('/rounds/start', {
         method: 'POST',
-        body: JSON.stringify({ course_id: selectedCourseId, round_type: roundType }),
+        body: JSON.stringify({
+          course_id: selectedCourseId,
+          round_type: roundType,
+          event_id: roundType === 'tournament' ? selectedEventId : null,
+        }),
       })
 
       setHoles(sortedHoles)
@@ -329,7 +335,7 @@ export default function ScoreEntry() {
       <div style={styles.tabBar}>
         <button
           style={{ ...styles.tabBtn, ...(tab === 'play' ? styles.tabBtnActive : {}) }}
-          onClick={() => { setTab('play'); setRoundType(null) }}
+          onClick={() => { setTab('play'); setRoundType(null); setSelectedEventId('') }}
         >
           Play
         </button>
@@ -399,9 +405,15 @@ export default function ScoreEntry() {
             <div style={styles.roundTypeName}>Qualifier</div>
             <div style={styles.roundTypeDesc}>Playing for a tournament spot</div>
           </button>
-          <button style={styles.roundTypeBtn} onClick={() => setRoundType('tournament')}>
+          <button
+            style={styles.roundTypeBtn}
+            onClick={() => {
+              setRoundType('tournament')
+              apiCall('/events').then(setTournamentEvents).catch((err) => setError(err.message))
+            }}
+          >
             <div style={styles.roundTypeName}>Tournament</div>
-            <div style={styles.roundTypeDesc}>Coming soon</div>
+            <div style={styles.roundTypeDesc}>Play a round tied to a tournament event</div>
           </button>
 
           {(player.role === 'coach' || player.role === 'captain') && (
@@ -414,9 +426,63 @@ export default function ScoreEntry() {
 
       {tab === 'play' && roundType === 'tournament' && (
         <div style={styles.page}>
-          <button style={styles.linkBtn} onClick={() => setRoundType(null)}>← Back</button>
-          <h2>Tournament Rounds</h2>
-          <p>Coming soon — tournament rounds will tie into live public leaderboards. For now, use Team Round, Individual Round, or Qualifier.</p>
+          <button style={styles.linkBtn} onClick={() => { setRoundType(null); setSelectedEventId('') }}>← Back</button>
+          <h2>Tournament</h2>
+
+          {!tournamentEvents ? (
+            <p>Loading events…</p>
+          ) : (
+            (() => {
+              const playable = tournamentEvents.filter((e) =>
+                ['stroke_individual', 'stroke_team'].includes(e.format_type)
+              )
+              if (playable.length === 0) {
+                return <p>No tournament events set up for play yet — other formats are coming in a later update.</p>
+              }
+              return playable.map((ev) => (
+                <button
+                  key={ev.id}
+                  style={styles.roundTypeBtn}
+                  onClick={() => {
+                    setSelectedEventId(ev.id)
+                    if (ev.course_id) setSelectedCourseId(ev.course_id)
+                  }}
+                >
+                  <div style={styles.roundTypeName}>{ev.name}</div>
+                  <div style={styles.roundTypeDesc}>
+                    {ev.format_type === 'stroke_individual' ? 'Stroke Play — Individual' : 'Stroke Play — Team'}
+                    {ev.courses && ` · ${ev.courses.name}`}
+                  </div>
+                </button>
+              ))
+            })()
+          )}
+
+          {selectedEventId && (
+            <>
+              {!courses.find((c) => c.id === selectedCourseId) && courses.length > 0 && (
+                <>
+                  <label style={styles.label}>Course</label>
+                  <select
+                    style={styles.input}
+                    value={selectedCourseId}
+                    onChange={(e) => setSelectedCourseId(e.target.value)}
+                  >
+                    <option value="" disabled>Select a course…</option>
+                    {courses.map((c) => (
+                      <option key={c.id} value={c.id}>{c.name}</option>
+                    ))}
+                  </select>
+                </>
+              )}
+
+              {error && <p style={styles.error}>{error}</p>}
+
+              <button style={styles.button} onClick={startRound} disabled={!selectedCourseId}>
+                Start Round
+              </button>
+            </>
+          )}
         </div>
       )}
 
