@@ -38,16 +38,28 @@ const TIER_COLORS = {
   over: '#111111',
 }
 
-const TEAM_BALL_FORMATS = ['scramble_2', 'scramble_4', 'alt_shot']
+const TEAM_BALL_FORMATS = ['scramble_2', 'scramble_4', 'alt_shot', 'chapman']
+const ALL_PLAYABLE_FORMATS = [
+  'stroke_individual', 'stroke_team', 'best_ball', 'shamble',
+  'scramble_2', 'scramble_4', 'alt_shot', 'chapman',
+  'stableford', 'skins', 'match_play', 'greyhound_cup', 'wolf',
+]
 
 function FORMAT_LABEL(value) {
   const map = {
     stroke_individual: 'Stroke Play — Individual',
     stroke_team: 'Stroke Play — Team',
     best_ball: 'Best Ball',
+    shamble: 'Shamble',
     scramble_2: '2-Man Scramble',
     scramble_4: '4-Man Scramble',
     alt_shot: 'Alternate Shot',
+    chapman: 'Chapman (Pinehurst)',
+    stableford: 'Stableford',
+    skins: 'Skins',
+    match_play: 'Match Play',
+    greyhound_cup: 'Greyhound Cup',
+    wolf: 'Wolf',
   }
   return map[value] || value
 }
@@ -463,7 +475,7 @@ export default function ScoreEntry() {
           ) : (
             (() => {
               const playable = tournamentEvents.filter((e) =>
-                ['stroke_individual', 'stroke_team', 'best_ball', ...TEAM_BALL_FORMATS].includes(e.format_type)
+                ALL_PLAYABLE_FORMATS.includes(e.format_type)
               )
               if (playable.length === 0) {
                 return <p>No tournament events set up for play yet — other formats are coming in a later update.</p>

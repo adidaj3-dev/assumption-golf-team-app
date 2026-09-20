@@ -199,11 +199,30 @@ VALID_ROUND_TYPES = {"team", "individual", "qualifier", "tournament"}
 
 
 PLAYABLE_EVENT_FORMATS = {
-    "stroke_individual", "stroke_team", "best_ball",
-    "scramble_2", "scramble_4", "alt_shot",
-}  # formats with working play/leaderboard
+    "stroke_individual", "stroke_team", "best_ball", "shamble",
+    "scramble_2", "scramble_4", "alt_shot", "chapman",
+    "stableford", "skins", "match_play", "greyhound_cup", "wolf",
+}  # every format now has a working play/leaderboard path
 
-TEAM_BALL_FORMATS = {"scramble_2", "scramble_4", "alt_shot"}  # one shared scorecard per team
+# One ball per team — needs the shared, resumable scorecard (any teammate
+# can pick it up). Chapman becomes one-ball after both tee shots, so it
+# belongs here even though it starts with two balls.
+TEAM_BALL_FORMATS = {"scramble_2", "scramble_4", "alt_shot", "chapman"}
+
+# Everyone plays their own ball, and the team's per-hole result is the BEST
+# of the teammates' individual scores that hole. Shamble uses this same math
+# once the shared tee shot is chosen — nothing else about it is different
+# from Best Ball digitally.
+BEST_BALL_STYLE_FORMATS = {"best_ball", "shamble"}
+
+# Formats scored from raw hole-by-hole strokes but with a points-based (not
+# score-to-par) leaderboard.
+STABLEFORD_POINTS = {-3: 6, -2: 5, -1: 3, 0: 2, 1: 1}  # relative-to-par -> points; 2+ over par = 0
+
+# Formats needing exactly two sides (event_teams) compared head-to-head,
+# hole by hole, using the same "best of the side's players" per-hole result
+# (a side of 1 player = ordinary singles match play).
+HEAD_TO_HEAD_FORMATS = {"match_play", "greyhound_cup"}
 
 
 @app.post("/rounds/start")
@@ -1389,17 +1408,159 @@ def delete_event(event_id: UUID, player=Depends(get_current_player)):
 # round type already produces — no separate scoring pipeline needed.
 # ---------------------------------------------------------------------------
 
+def _team_best_per_hole(event_id: str, event_team_id: str) -> dict:
+    """For a group of players (an event_team), returns {hole_id: best_strokes}
+    across all their individual rounds tied to this event — the shared
+    building block behind Best Ball/Shamble, Match Play, and the Greyhound
+    Cup, all of which compare 'the side's best score per hole'."""
+    members = (
+        supabase.table("event_team_members")
+        .select("player_id")
+        .eq("event_team_id", event_team_id)
+        .execute()
+        .data
+    )
+    member_ids = [m["player_id"] for m in members]
+    if not member_ids:
+        return {}
+
+    rounds = (
+        supabase.table("rounds")
+        .select("id, player_id")
+        .eq("event_id", event_id)
+        .in_("player_id", member_ids)
+        .execute()
+        .data
+    )
+    # Most recent round per member
+    latest = {}
+    for r in rounds:
+        if r["player_id"] not in latest:
+            latest[r["player_id"]] = r
+    round_ids = [r["id"] for r in latest.values()]
+    if not round_ids:
+        return {}
+
+    all_scores = (
+        supabase.table("hole_scores")
+        .select("hole_id, strokes")
+        .in_("round_id", round_ids)
+        .execute()
+        .data
+    )
+    best = {}
+    for s in all_scores:
+        hid = s["hole_id"]
+        if hid not in best or s["strokes"] < best[hid]:
+            best[hid] = s["strokes"]
+    return best
+
+
 @app.get("/events/{event_id}/leaderboard")
 def event_leaderboard(event_id: UUID, player=Depends(get_current_player)):
     event = supabase.table("events").select("*").eq("id", str(event_id)).single().execute().data
     if not event:
         raise HTTPException(404, "Event not found")
-    if event["format_type"] not in PLAYABLE_EVENT_FORMATS:
-        raise HTTPException(400, f"Live leaderboard for '{event['format_type']}' isn't built yet")
+    fmt = event["format_type"]
+    if fmt not in PLAYABLE_EVENT_FORMATS:
+        raise HTTPException(400, f"Live leaderboard for '{fmt}' isn't built yet")
 
-    if event["format_type"] in TEAM_BALL_FORMATS:
-        # One shared round per team — the score IS the team's score, no
-        # per-hole "best of" or summing needed.
+    # -----------------------------------------------------------------
+    # Head-to-head formats: Match Play and the Greyhound Cup. Both compare
+    # exactly two sides hole-by-hole using each side's best score per hole
+    # (a side of one player is just an ordinary score).
+    # -----------------------------------------------------------------
+    if fmt in HEAD_TO_HEAD_FORMATS:
+        teams = supabase.table("event_teams").select("id, team_name").eq("event_id", str(event_id)).execute().data
+        if len(teams) != 2:
+            raise HTTPException(400, f"{FORMAT_LABELS[fmt]} needs exactly 2 teams/sides — this event has {len(teams)}")
+
+        holes = (
+            supabase.table("holes")
+            .select("id, hole_number, par")
+            .eq("course_id", event["course_id"])
+            .order("hole_number")
+            .execute()
+            .data
+        ) if event["course_id"] else []
+
+        best_a = _team_best_per_hole(str(event_id), teams[0]["id"])
+        best_b = _team_best_per_hole(str(event_id), teams[1]["id"])
+
+        hole_results = []  # 'A', 'B', or 'halve' per hole actually played by both sides
+        for h in holes:
+            if h["id"] in best_a and h["id"] in best_b:
+                if best_a[h["id"]] < best_b[h["id"]]:
+                    hole_results.append("A")
+                elif best_b[h["id"]] < best_a[h["id"]]:
+                    hole_results.append("B")
+                else:
+                    hole_results.append("halve")
+
+        if fmt == "match_play":
+            a_wins = hole_results.count("A")
+            b_wins = hole_results.count("B")
+            thru = len(hole_results)
+            total_holes = len(holes) or event["num_holes"]
+            holes_remaining = total_holes - thru
+            status = a_wins - b_wins  # positive = team A up
+            closed_out = abs(status) > holes_remaining and holes_remaining >= 0 and thru > 0
+
+            return {
+                "format_type": fmt,
+                "team_a": teams[0]["team_name"],
+                "team_b": teams[1]["team_name"],
+                "status": status,  # +N = A is N up, -N = B is N up, 0 = all square
+                "thru": thru,
+                "total_holes": total_holes,
+                "closed_out": closed_out,
+                "closed_out_margin": f"{abs(status)}&{holes_remaining}" if closed_out else None,
+            }
+
+        # greyhound_cup: same per-hole results, bucketed into 6-hole segments.
+        # Each segment is worth 3 points to whichever side wins more holes in
+        # it (1.5 each on a tied segment) — a clean, real-Ryder-Cup-style
+        # match per segment, not a running score-to-par. Overall holes won
+        # (not segments) is kept purely as the tiebreaker if the cup itself
+        # ends level on points.
+        segment_size = 6
+        segments = []
+        for i in range(0, len(hole_results), segment_size):
+            chunk = hole_results[i:i + segment_size]
+            if len(chunk) < segment_size:
+                break  # incomplete segment — not resolved yet
+            a_holes = chunk.count("A")
+            b_holes = chunk.count("B")
+            if a_holes > b_holes:
+                segments.append({"winner": "A", "points_a": 3, "points_b": 0, "a_holes": a_holes, "b_holes": b_holes})
+            elif b_holes > a_holes:
+                segments.append({"winner": "B", "points_a": 0, "points_b": 3, "a_holes": a_holes, "b_holes": b_holes})
+            else:
+                segments.append({"winner": None, "points_a": 1.5, "points_b": 1.5, "a_holes": a_holes, "b_holes": b_holes})
+
+        cup_points_a = sum(s["points_a"] for s in segments)
+        cup_points_b = sum(s["points_b"] for s in segments)
+        total_holes_a = hole_results.count("A")
+        total_holes_b = hole_results.count("B")
+
+        return {
+            "format_type": fmt,
+            "team_a": teams[0]["team_name"],
+            "team_b": teams[1]["team_name"],
+            "segments": segments,
+            "cup_points_a": cup_points_a,
+            "cup_points_b": cup_points_b,
+            "thru": len(hole_results),
+            "total_holes": len(holes) or event["num_holes"],
+            "tiebreaker_holes_a": total_holes_a,
+            "tiebreaker_holes_b": total_holes_b,
+        }
+
+    # -----------------------------------------------------------------
+    # Team-ball formats: Scramble, Alternate Shot, Chapman — one shared,
+    # resumable round per team; its score IS the team's score.
+    # -----------------------------------------------------------------
+    if fmt in TEAM_BALL_FORMATS:
         teams = supabase.table("event_teams").select("id, team_name").eq("event_id", str(event_id)).execute().data
         team_leaderboard = []
         for t in teams:
@@ -1453,10 +1614,12 @@ def event_leaderboard(event_id: UUID, player=Depends(get_current_player)):
             })
 
         team_leaderboard.sort(key=lambda e: (e["team_score_to_par"] is None, e["team_score_to_par"] or 0))
-        return {"format_type": event["format_type"], "leaderboard": team_leaderboard}
+        return {"format_type": fmt, "leaderboard": team_leaderboard}
 
-    # Every round tied to this event, one per player (a player could in
-    # theory start more than one; take their most recent).
+    # -----------------------------------------------------------------
+    # Everyone plays their own ball — pull every round tied to this event
+    # once, then branch on how to score it.
+    # -----------------------------------------------------------------
     rounds = (
         supabase.table("rounds")
         .select("id, player_id, completed_at, players(full_name)")
@@ -1484,7 +1647,7 @@ def event_leaderboard(event_id: UUID, player=Depends(get_current_player)):
         total_par = sum(s["holes"]["par"] for s in scores)
         return total_strokes - total_par, len(scores)
 
-    if event["format_type"] == "stroke_individual":
+    if fmt == "stroke_individual":
         leaderboard = []
         for pid, r in latest_round_by_player.items():
             score_to_par, holes_played = score_for_round(r["id"])
@@ -1495,15 +1658,160 @@ def event_leaderboard(event_id: UUID, player=Depends(get_current_player)):
                 "completed": r["completed_at"] is not None,
             })
         leaderboard.sort(key=lambda e: (e["score_to_par"] is None, e["score_to_par"]))
-        return {"format_type": event["format_type"], "leaderboard": leaderboard}
+        return {"format_type": fmt, "leaderboard": leaderboard}
 
-    # stroke_team: sum each team's members' individual scores-to-par
+    if fmt == "stableford":
+        leaderboard = []
+        for pid, r in latest_round_by_player.items():
+            scores = (
+                supabase.table("hole_scores")
+                .select("strokes, holes(par)")
+                .eq("round_id", r["id"])
+                .execute()
+                .data
+            )
+            points = 0
+            for s in scores:
+                relative = s["strokes"] - s["holes"]["par"]
+                points += STABLEFORD_POINTS.get(relative, 0 if relative >= 2 else 6)
+            leaderboard.append({
+                "player_name": r["players"]["full_name"],
+                "points": points if scores else None,
+                "holes_played": len(scores),
+                "completed": r["completed_at"] is not None,
+            })
+        leaderboard.sort(key=lambda e: (e["points"] is None, -(e["points"] or 0)))
+        return {"format_type": fmt, "leaderboard": leaderboard}
+
+    if fmt == "skins":
+        holes = (
+            supabase.table("holes")
+            .select("id, hole_number")
+            .eq("course_id", event["course_id"])
+            .order("hole_number")
+            .execute()
+            .data
+        ) if event["course_id"] else []
+
+        strokes_by_hole = {h["id"]: {} for h in holes}  # hole_id -> {player_name: strokes}
+        for pid, r in latest_round_by_player.items():
+            scores = supabase.table("hole_scores").select("hole_id, strokes").eq("round_id", r["id"]).execute().data
+            for s in scores:
+                if s["hole_id"] in strokes_by_hole:
+                    strokes_by_hole[s["hole_id"]][r["players"]["full_name"]] = s["strokes"]
+
+        skins_won = {r["players"]["full_name"]: 0 for r in latest_round_by_player.values()}
+        carryover = 0
+        skins_log = []
+        for h in holes:
+            entries = strokes_by_hole.get(h["id"], {})
+            if len(entries) < 2:
+                continue  # not everyone's played this hole yet — leave it pending
+            best_score = min(entries.values())
+            winners = [name for name, s in entries.items() if s == best_score]
+            pot = 1 + carryover
+            if len(winners) == 1:
+                skins_won[winners[0]] += pot
+                skins_log.append({"hole_number": h["hole_number"], "winner": winners[0], "skins": pot})
+                carryover = 0
+            else:
+                carryover = pot  # tied for low — skin carries to next hole
+                skins_log.append({"hole_number": h["hole_number"], "winner": None, "skins": pot})
+
+        leaderboard = [{"player_name": name, "skins": count} for name, count in skins_won.items()]
+        leaderboard.sort(key=lambda e: -e["skins"])
+        return {"format_type": fmt, "leaderboard": leaderboard, "carryover_pending": carryover, "log": skins_log}
+
+    if fmt == "wolf":
+        teams = supabase.table("event_teams").select("id, team_name").eq("event_id", str(event_id)).execute().data
+        decisions = (
+            supabase.table("wolf_hole_decisions")
+            .select("*")
+            .eq("event_id", str(event_id))
+            .execute()
+            .data
+        )
+        decisions_by_hole = {d["hole_number"]: d for d in decisions}
+
+        holes = (
+            supabase.table("holes")
+            .select("id, hole_number")
+            .eq("course_id", event["course_id"])
+            .order("hole_number")
+            .execute()
+            .data
+        ) if event["course_id"] else []
+        hole_id_by_number = {h["hole_number"]: h["id"] for h in holes}
+
+        points = {}
+        names_by_id = {}
+        for t in teams:
+            members = (
+                supabase.table("event_team_members")
+                .select("player_id, players(full_name)")
+                .eq("event_team_id", t["id"])
+                .execute()
+                .data
+            )
+            for m in members:
+                points[m["player_id"]] = 0
+                names_by_id[m["player_id"]] = m["players"]["full_name"]
+
+            member_ids = [m["player_id"] for m in members]
+            rounds_by_member = {}
+            for pid in member_ids:
+                r = (
+                    supabase.table("rounds")
+                    .select("id")
+                    .eq("event_id", str(event_id))
+                    .eq("player_id", pid)
+                    .order("started_at", desc=True)
+                    .limit(1)
+                    .execute()
+                    .data
+                )
+                if r:
+                    scores = supabase.table("hole_scores").select("hole_id, strokes").eq("round_id", r[0]["id"]).execute().data
+                    rounds_by_member[pid] = {s["hole_id"]: s["strokes"] for s in scores}
+
+            for hole_number, decision in decisions_by_hole.items():
+                hid = hole_id_by_number.get(hole_number)
+                if not hid or decision["event_team_id"] != t["id"]:
+                    continue
+                wolf_id = decision["wolf_player_id"]
+                partner_id = decision.get("partner_player_id")
+                strokes = {pid: rounds_by_member.get(pid, {}).get(hid) for pid in member_ids}
+                if any(strokes.get(pid) is None for pid in member_ids):
+                    continue  # wait until everyone's entered this hole
+
+                if partner_id:
+                    wolf_side = [wolf_id, partner_id]
+                    other_side = [pid for pid in member_ids if pid not in wolf_side]
+                    wolf_best = min(strokes[pid] for pid in wolf_side)
+                    other_best = min(strokes[pid] for pid in other_side)
+                    if wolf_best < other_best:
+                        for pid in wolf_side:
+                            points[pid] += 1
+                    elif other_best < wolf_best:
+                        for pid in other_side:
+                            points[pid] += 1
+                else:
+                    other_side = [pid for pid in member_ids if pid != wolf_id]
+                    wolf_score = strokes[wolf_id]
+                    other_best = min(strokes[pid] for pid in other_side)
+                    if wolf_score < other_best:
+                        points[wolf_id] += 4  # lone wolf win — default 4x, adjustable
+                    elif other_best < wolf_score:
+                        for pid in other_side:
+                            points[pid] += 1
+
+        leaderboard = [{"player_name": names_by_id[pid], "points": pts} for pid, pts in points.items()]
+        leaderboard.sort(key=lambda e: -e["points"])
+        return {"format_type": fmt, "leaderboard": leaderboard}
+
+    # Best Ball / Shamble
     teams = supabase.table("event_teams").select("id, team_name").eq("event_id", str(event_id)).execute().data
-
-    if event["format_type"] == "best_ball":
-        # For each hole, take the best (lowest) strokes among teammates who
-        # have recorded that hole; the team's score is the sum of those
-        # per-hole bests, compared to par for the holes actually covered.
+    if fmt in BEST_BALL_STYLE_FORMATS:
         team_leaderboard = []
         for t in teams:
             members = (
@@ -1557,9 +1865,9 @@ def event_leaderboard(event_id: UUID, player=Depends(get_current_player)):
             })
 
         team_leaderboard.sort(key=lambda e: (e["team_score_to_par"] is None, e["team_score_to_par"] or 0))
-        return {"format_type": event["format_type"], "leaderboard": team_leaderboard}
+        return {"format_type": fmt, "leaderboard": team_leaderboard}
 
-    # stroke_team
+    # stroke_team: sum each team's members' individual scores-to-par
     team_leaderboard = []
     for t in teams:
         members = (
@@ -1594,4 +1902,53 @@ def event_leaderboard(event_id: UUID, player=Depends(get_current_player)):
         })
 
     team_leaderboard.sort(key=lambda e: (e["team_score_to_par"] is None, e["team_score_to_par"] or 0))
-    return {"format_type": event["format_type"], "leaderboard": team_leaderboard}
+    return {"format_type": fmt, "leaderboard": team_leaderboard}
+
+
+class WolfDecisionIn(BaseModel):
+    event_team_id: UUID
+    hole_number: int
+    wolf_player_id: UUID
+    partner_player_id: Optional[UUID] = None  # null = lone wolf
+
+
+@app.post("/events/{event_id}/wolf-decision")
+def submit_wolf_decision(event_id: UUID, body: WolfDecisionIn, player=Depends(get_current_player)):
+    """Any member of the wolf group (event_team) can log that hole's
+    decision — same trust model as the shared team scorecard."""
+    members = (
+        supabase.table("event_team_members")
+        .select("player_id")
+        .eq("event_team_id", str(body.event_team_id))
+        .execute()
+        .data
+    )
+    if not any(m["player_id"] == player["id"] for m in members):
+        raise HTTPException(403, "Not in this wolf group")
+
+    existing = (
+        supabase.table("wolf_hole_decisions")
+        .select("id")
+        .eq("event_id", str(event_id))
+        .eq("event_team_id", str(body.event_team_id))
+        .eq("hole_number", body.hole_number)
+        .execute()
+        .data
+    )
+    payload = {
+        "event_id": str(event_id),
+        "event_team_id": str(body.event_team_id),
+        "hole_number": body.hole_number,
+        "wolf_player_id": str(body.wolf_player_id),
+        "partner_player_id": str(body.partner_player_id) if body.partner_player_id else None,
+    }
+    if existing:
+        row = supabase.table("wolf_hole_decisions").update(payload).eq("id", existing[0]["id"]).execute().data[0]
+    else:
+        row = supabase.table("wolf_hole_decisions").insert(payload).execute().data[0]
+    return row
+
+
+@app.get("/events/{event_id}/wolf-decisions")
+def get_wolf_decisions(event_id: UUID, player=Depends(get_current_player)):
+    return supabase.table("wolf_hole_decisions").select("*").eq("event_id", str(event_id)).execute().data

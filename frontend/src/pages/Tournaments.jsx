@@ -119,6 +119,86 @@ function FORMAT_LABEL(value) {
   return map[value] || value
 }
 
+function WolfDecisionPanel({ eventId, teams }) {
+  const [holeNumber, setHoleNumber] = useState(1)
+  const [saving, setSaving] = useState(null) // team id currently saving
+  const [error, setError] = useState(null)
+  const [savedHoles, setSavedHoles] = useState({}) // teamId -> last saved hole number
+
+  async function saveDecision(team, wolfPlayerId, partnerPlayerId) {
+    setSaving(team.id)
+    setError(null)
+    try {
+      await authedFetch(`/events/${eventId}/wolf-decision`, {
+        method: 'POST',
+        body: JSON.stringify({
+          event_team_id: team.id,
+          hole_number: Number(holeNumber),
+          wolf_player_id: wolfPlayerId,
+          partner_player_id: partnerPlayerId || null,
+        }),
+      })
+      setSavedHoles((prev) => ({ ...prev, [team.id]: holeNumber }))
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setSaving(null)
+    }
+  }
+
+  return (
+    <div>
+      <h3 style={styles.sectionTitle}>Wolf Decisions</h3>
+      <p style={styles.muted}>Wolf rotates through each group in order. Set the hole, then record who the wolf partnered with (or Lone Wolf).</p>
+
+      <label style={styles.label}>Hole number</label>
+      <input
+        type="number"
+        min={1}
+        style={styles.input}
+        value={holeNumber}
+        onChange={(e) => setHoleNumber(e.target.value)}
+      />
+
+      {error && <p style={styles.error}>{error}</p>}
+
+      {teams.map((t) => {
+        if (t.members.length < 2) return null
+        const wolfIndex = (Number(holeNumber) - 1) % t.members.length
+        const wolf = t.members[wolfIndex]
+        const others = t.members.filter((m) => m.player_id !== wolf.player_id)
+
+        return (
+          <div key={t.id} style={styles.wolfCard}>
+            <div style={styles.teamName}>{t.team_name}</div>
+            <p style={styles.muted}>Wolf on hole {holeNumber}: <strong>{wolf.full_name}</strong></p>
+            <div style={styles.rosterGrid}>
+              {others.map((o) => (
+                <button
+                  key={o.player_id}
+                  style={styles.rosterChip}
+                  disabled={saving === t.id}
+                  onClick={() => saveDecision(t, wolf.player_id, o.player_id)}
+                >
+                  Partner: {o.full_name}
+                </button>
+              ))}
+              <button
+                style={styles.rosterChip}
+                disabled={saving === t.id}
+                onClick={() => saveDecision(t, wolf.player_id, null)}
+              >
+                Lone Wolf
+              </button>
+            </div>
+            {savedHoles[t.id] === Number(holeNumber) && <p style={styles.savedNote}>Saved for hole {holeNumber} ✓</p>}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
 function CreateEvent({ formats, courses, onCancel, onCreated }) {
   const [name, setName] = useState('')
   const [eventDate, setEventDate] = useState('')
@@ -201,8 +281,14 @@ function EventDetail({ eventId, canManage, onBack }) {
   const [leaderboard, setLeaderboard] = useState(null)
   const [error, setError] = useState(null)
 
-  const PLAYABLE_FORMATS = ['stroke_individual', 'stroke_team', 'best_ball', 'scramble_2', 'scramble_4', 'alt_shot']
-  const TEAM_BALL_FORMATS = ['scramble_2', 'scramble_4', 'alt_shot']
+  const PLAYABLE_FORMATS = [
+    'stroke_individual', 'stroke_team', 'best_ball', 'shamble',
+    'scramble_2', 'scramble_4', 'alt_shot', 'chapman',
+    'stableford', 'skins', 'match_play', 'greyhound_cup', 'wolf',
+  ]
+  const TEAM_BALL_FORMATS = ['scramble_2', 'scramble_4', 'alt_shot', 'chapman']
+  const HEAD_TO_HEAD_FORMATS = ['match_play', 'greyhound_cup']
+  const BEST_BALL_STYLE_FORMATS = ['best_ball', 'shamble']
 
   useEffect(() => {
     load()
@@ -218,7 +304,7 @@ function EventDetail({ eventId, canManage, onBack }) {
   }, [event?.format_type])
 
   function loadLeaderboard() {
-    authedFetch(`/events/${eventId}/leaderboard`).then((res) => setLeaderboard(res.leaderboard)).catch(() => {})
+    authedFetch(`/events/${eventId}/leaderboard`).then(setLeaderboard).catch(() => {})
   }
 
   function load() {
@@ -292,10 +378,51 @@ function EventDetail({ eventId, canManage, onBack }) {
           <h3 style={styles.sectionTitle}>Live Leaderboard</h3>
           {!leaderboard ? (
             <p>Loading…</p>
-          ) : leaderboard.length === 0 ? (
+          ) : HEAD_TO_HEAD_FORMATS.includes(event.format_type) ? (
+            event.format_type === 'match_play' ? (
+              <div style={styles.matchPlayCard}>
+                <div style={styles.matchPlayRow}>
+                  <span style={styles.matchPlaySide}>{leaderboard.team_a}</span>
+                  <span style={styles.matchPlayStatus}>
+                    {leaderboard.status === 0 ? 'All Square' : leaderboard.status > 0
+                      ? `${leaderboard.status} UP`
+                      : `${Math.abs(leaderboard.status)} UP`}
+                  </span>
+                  <span style={styles.matchPlaySide}>{leaderboard.team_b}</span>
+                </div>
+                <p style={styles.muted}>
+                  {leaderboard.closed_out
+                    ? `Match closed out, ${leaderboard.closed_out_margin} — ${leaderboard.status > 0 ? leaderboard.team_a : leaderboard.team_b} wins`
+                    : `Thru ${leaderboard.thru} of ${leaderboard.total_holes}`}
+                </p>
+              </div>
+            ) : (
+              <div style={styles.matchPlayCard}>
+                <div style={styles.matchPlayRow}>
+                  <span style={styles.matchPlaySide}>{leaderboard.team_a}</span>
+                  <span style={styles.matchPlayStatus}>
+                    {leaderboard.cup_points_a} – {leaderboard.cup_points_b}
+                  </span>
+                  <span style={styles.matchPlaySide}>{leaderboard.team_b}</span>
+                </div>
+                <p style={styles.muted}>Thru {leaderboard.thru} of {leaderboard.total_holes} · {leaderboard.segments.length} segment{leaderboard.segments.length === 1 ? '' : 's'} decided</p>
+                {leaderboard.segments.map((s, i) => (
+                  <div key={i} style={styles.segmentRow}>
+                    <span>Segment {i + 1} (holes {i * 6 + 1}–{i * 6 + 6})</span>
+                    <span>{s.points_a} – {s.points_b}</span>
+                  </div>
+                ))}
+                {leaderboard.cup_points_a === leaderboard.cup_points_b && leaderboard.thru === leaderboard.total_holes && (
+                  <p style={styles.muted}>
+                    Tiebreaker (total holes won): {leaderboard.team_a} {leaderboard.tiebreaker_holes_a} – {leaderboard.tiebreaker_holes_b} {leaderboard.team_b}
+                  </p>
+                )}
+              </div>
+            )
+          ) : !leaderboard.leaderboard || leaderboard.leaderboard.length === 0 ? (
             <p style={styles.muted}>No one has started a round for this event yet.</p>
           ) : event.format_type === 'stroke_individual' ? (
-            leaderboard.map((row, i) => (
+            leaderboard.leaderboard.map((row, i) => (
               <div key={i} style={styles.leaderboardRow}>
                 <span style={styles.leaderboardRank}>{i + 1}</span>
                 <span style={styles.leaderboardName}>{row.player_name}</span>
@@ -307,8 +434,41 @@ function EventDetail({ eventId, canManage, onBack }) {
                 </span>
               </div>
             ))
+          ) : event.format_type === 'stableford' ? (
+            leaderboard.leaderboard.map((row, i) => (
+              <div key={i} style={styles.leaderboardRow}>
+                <span style={styles.leaderboardRank}>{i + 1}</span>
+                <span style={styles.leaderboardName}>{row.player_name}</span>
+                <span style={styles.leaderboardScore}>
+                  {row.points == null ? 'Not started' : `${row.points} pts`}
+                </span>
+                <span style={styles.leaderboardThru}>
+                  {row.points == null ? '' : row.completed ? 'F' : `thru ${row.holes_played}`}
+                </span>
+              </div>
+            ))
+          ) : event.format_type === 'skins' ? (
+            leaderboard.leaderboard.map((row, i) => (
+              <div key={i} style={styles.leaderboardRow}>
+                <span style={styles.leaderboardRank}>{i + 1}</span>
+                <span style={styles.leaderboardName}>{row.player_name}</span>
+                <span style={styles.leaderboardScore}>{row.skins} skin{row.skins === 1 ? '' : 's'}</span>
+                <span style={styles.leaderboardThru}>
+                  {leaderboard.carryover_pending > 0 ? `${leaderboard.carryover_pending} carrying over` : ''}
+                </span>
+              </div>
+            ))
+          ) : event.format_type === 'wolf' ? (
+            leaderboard.leaderboard.map((row, i) => (
+              <div key={i} style={styles.leaderboardRow}>
+                <span style={styles.leaderboardRank}>{i + 1}</span>
+                <span style={styles.leaderboardName}>{row.player_name}</span>
+                <span style={styles.leaderboardScore}>{row.points} pts</span>
+                <span style={styles.leaderboardThru}></span>
+              </div>
+            ))
           ) : TEAM_BALL_FORMATS.includes(event.format_type) ? (
-            leaderboard.map((team, i) => (
+            leaderboard.leaderboard.map((team, i) => (
               <div key={i} style={styles.teamLeaderboardCard}>
                 <div style={styles.teamLeaderboardHeader}>
                   <span style={styles.leaderboardRank}>{i + 1}</span>
@@ -325,7 +485,7 @@ function EventDetail({ eventId, canManage, onBack }) {
               </div>
             ))
           ) : (
-            leaderboard.map((team, i) => (
+            leaderboard.leaderboard.map((team, i) => (
               <div key={i} style={styles.teamLeaderboardCard}>
                 <div style={styles.teamLeaderboardHeader}>
                   <span style={styles.leaderboardRank}>{i + 1}</span>
@@ -344,6 +504,10 @@ function EventDetail({ eventId, canManage, onBack }) {
             ))
           )}
         </>
+      )}
+
+      {event.format_type === 'wolf' && canManage && (
+        <WolfDecisionPanel eventId={eventId} teams={event.teams} />
       )}
 
       {canManage && (
@@ -452,6 +616,34 @@ const styles = {
     paddingLeft: '2.1rem',
     marginTop: '0.2rem',
   },
+  matchPlayCard: {
+    background: colors.grayLight,
+    borderRadius: '0.75rem',
+    padding: '1.25rem',
+    marginBottom: '1rem',
+  },
+  matchPlayRow: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  matchPlaySide: { fontWeight: 'bold', color: colors.primary, fontSize: '1.05rem' },
+  matchPlayStatus: { fontWeight: 'bold', fontSize: '1.2rem' },
+  segmentRow: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    fontSize: '0.85rem',
+    color: colors.textMuted,
+    padding: '0.3rem 0',
+    borderTop: '1px solid #ddd',
+  },
+  wolfCard: {
+    background: colors.grayLight,
+    borderRadius: '0.6rem',
+    padding: '1rem',
+    marginTop: '0.75rem',
+  },
+  savedNote: { color: colors.primary, fontSize: '0.85rem', fontWeight: 600, marginTop: '0.5rem' },
   teamMemberRow: {
     display: 'flex',
     justifyContent: 'space-between',

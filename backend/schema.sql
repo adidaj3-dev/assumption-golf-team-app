@@ -209,3 +209,21 @@ alter table rounds add column event_id uuid references events(id);
 -- Phase 4: team-ball formats (scramble, alt shot) — one shared scorecard
 -- per team, resumable by any teammate.
 alter table rounds add column event_team_id uuid references event_teams(id);
+
+-- Phase 5+: Wolf needs one decision recorded per hole (who's the wolf, did
+-- they pick a partner or go it alone) — everything else (strokes) reuses
+-- the normal individual round entry.
+create table wolf_hole_decisions (
+    id uuid primary key default gen_random_uuid(),
+    event_id uuid not null references events(id) on delete cascade,
+    event_team_id uuid not null references event_teams(id) on delete cascade,
+    hole_number int not null,
+    wolf_player_id uuid not null references players(id),
+    partner_player_id uuid references players(id),
+    created_at timestamptz default now(),
+    unique (event_id, event_team_id, hole_number)
+);
+
+alter table wolf_hole_decisions enable row level security;
+create policy "anyone signed in reads wolf_hole_decisions" on wolf_hole_decisions
+    for select using (auth.role() = 'authenticated');
