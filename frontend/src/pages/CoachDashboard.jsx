@@ -68,10 +68,18 @@ export default function CoachDashboard() {
   }
 
   if (view === 'scorecard') {
-    return <Scorecard roundId={selectedRoundId} onBack={() => setView('rounds')} />
+    return <Scorecard roundId={selectedRoundId} onBack={() => setView('rounds')} editable />
   }
 
   if (view === 'rounds') {
+    const isTeam = (r) => r.round_type === 'team'
+    const groups = playerRounds ? [
+      { key: 'completeTeam', title: 'Complete Team Rounds', rounds: playerRounds.filter((r) => isTeam(r) && r.completed) },
+      { key: 'completeIndividual', title: 'Complete Individual Rounds', rounds: playerRounds.filter((r) => !isTeam(r) && r.completed) },
+      { key: 'incompleteTeam', title: 'Incomplete Team Rounds', rounds: playerRounds.filter((r) => isTeam(r) && !r.completed) },
+      { key: 'incompleteIndividual', title: 'Incomplete Individual Rounds', rounds: playerRounds.filter((r) => !isTeam(r) && !r.completed) },
+    ] : []
+
     return (
       <div style={styles.page}>
         <button style={styles.linkBtn} onClick={() => setView('players')}>← Back to team</button>
@@ -82,16 +90,25 @@ export default function CoachDashboard() {
         ) : playerRounds.length === 0 ? (
           <p>No rounds yet.</p>
         ) : (
-          playerRounds.map((r) => (
-            <button key={r.id} style={styles.roundRow} onClick={() => openRound(r.id)}>
-              <div>
-                <div style={styles.roundCourse}>{r.course_name}</div>
-                <div style={styles.roundDate}>
-                  {new Date(r.started_at).toLocaleDateString()} · {r.holes_played} holes {r.completed ? '' : '(in progress)'}
-                </div>
-              </div>
-              <div style={styles.roundScore}>{formatToPar(r.score_to_par)}</div>
-            </button>
+          groups.map((g) => (
+            <div key={g.key}>
+              <h3 style={styles.sectionTitle}>{g.title} ({g.rounds.length})</h3>
+              {g.rounds.length === 0 ? (
+                <p style={styles.muted}>None yet.</p>
+              ) : (
+                g.rounds.map((r) => (
+                  <button key={r.id} style={styles.roundRow} onClick={() => openRound(r.id)}>
+                    <div>
+                      <div style={styles.roundCourse}>{r.course_name}</div>
+                      <div style={styles.roundDate}>
+                        {new Date(r.started_at).toLocaleDateString()} · {r.holes_played} holes {r.completed ? '' : '(in progress)'}
+                      </div>
+                    </div>
+                    <div style={styles.roundScore}>{formatToPar(r.score_to_par)}</div>
+                  </button>
+                ))
+              )}
+            </div>
           ))
         )}
       </div>
@@ -290,6 +307,8 @@ const styles = {
   roundCourse: { fontWeight: 600 },
   roundDate: { fontSize: '0.8rem', color: '#666', marginTop: '0.15rem' },
   roundScore: { fontSize: '1.3rem', fontWeight: 'bold', color: '#004b87' },
+  sectionTitle: { marginTop: '1.5rem', marginBottom: '0.5rem' },
+  muted: { color: '#888', fontSize: '0.9rem' },
   linkBtn: {
     display: 'block',
     marginBottom: '1rem',

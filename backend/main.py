@@ -71,6 +71,7 @@ class RoundStartIn(BaseModel):
     round_type: str = "individual"  # 'team' | 'individual' | 'qualifier' | 'tournament'
     event_id: Optional[UUID] = None  # set when round_type == 'tournament'
     event_team_id: Optional[UUID] = None  # set for team-ball formats (scramble, alt shot)
+    for_player_id: Optional[UUID] = None  # coach-only: create this round for another player
 
 
 class HoleScoreIn(BaseModel):
@@ -230,6 +231,15 @@ def start_round(r: RoundStartIn, player=Depends(get_current_player)):
     if r.round_type not in VALID_ROUND_TYPES:
         raise HTTPException(400, f"Invalid round_type: {r.round_type}")
 
+    target_player_id = player["id"]
+    if r.for_player_id is not None:
+        if player["role"] != "coach":
+            raise HTTPException(403, "Only a coach can start a round for another player")
+        target = supabase.table("players").select("id").eq("id", str(r.for_player_id)).single().execute().data
+        if not target:
+            raise HTTPException(400, "Selected player not found")
+        target_player_id = str(r.for_player_id)
+
     if r.round_type == "tournament":
         if not r.event_id:
             raise HTTPException(400, "event_id is required for a tournament round")
@@ -270,7 +280,7 @@ def start_round(r: RoundStartIn, player=Depends(get_current_player)):
 
     row = supabase.table("rounds").insert(
         {
-            "player_id": player["id"],
+            "player_id": target_player_id,
             "course_id": str(r.course_id),
             "tournament_id": str(r.tournament_id) if r.tournament_id else None,
             "round_type": r.round_type,
@@ -284,7 +294,10 @@ def start_round(r: RoundStartIn, player=Depends(get_current_player)):
 def _can_write_round(round_row: dict, player: dict) -> bool:
     """A round can be written to by whoever started it — OR, for team-ball
     rounds, by any member of that event team, since the whole point is that
-    any teammate can pick up the shared scorecard."""
+    any teammate can pick up the shared scorecard — OR, always, by a coach,
+    so mistakes can be corrected without touching the database directly."""
+    if player["role"] == "coach":
+        return True
     if round_row["player_id"] == player["id"]:
         return True
     if round_row.get("event_team_id"):
@@ -385,7 +398,7 @@ def player_rounds(player_id: UUID, player=Depends(get_current_player)):
 
     rounds = (
         supabase.table("rounds")
-        .select("id, started_at, completed_at, round_type, course_id, courses(name)")
+        .select("id, started_at, completed_at, round_type, course_id, event_id, event_team_id, courses(name)")
         .eq("player_id", str(player_id))
         .order("started_at", desc=True)
         .execute()
@@ -410,10 +423,13 @@ def player_rounds(player_id: UUID, player=Depends(get_current_player)):
         )
         results.append({
             "id": r["id"],
+            "course_id": r["course_id"],
             "course_name": r["courses"]["name"] if r["courses"] else "Unknown course",
             "started_at": r["started_at"],
             "completed_at": r["completed_at"],
             "round_type": r["round_type"],
+            "event_id": r["event_id"],
+            "event_team_id": r["event_team_id"],
             "holes_played": len(scores),
             "score_to_par": (total_strokes - total_par) if scores else None,
             "completed": r["completed_at"] is not None,
@@ -1007,6 +1023,7 @@ def round_scorecard(round_id: UUID, player=Depends(get_current_player)):
     for h in all_holes:
         s = scores_by_hole.get(h["id"])
         holes_out.append({
+            "hole_id": h["id"],
             "hole_number": h["hole_number"],
             "par": h["par"],
             "handicap": h["handicap"],

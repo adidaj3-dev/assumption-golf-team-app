@@ -227,3 +227,30 @@ create table wolf_hole_decisions (
 alter table wolf_hole_decisions enable row level security;
 create policy "anyone signed in reads wolf_hole_decisions" on wolf_hole_decisions
     for select using (auth.role() = 'authenticated');
+
+-- Admin convenience view — Browse this in Supabase's Table Editor instead
+-- of the raw `rounds` table, so you see player names and readable status
+-- instead of UUIDs. Read-only (it's a view, not a table); edit the
+-- underlying `rounds`/`hole_scores` tables directly if you ever need to,
+-- or use the app's own coach-side round editor for routine fixes.
+create or replace view rounds_admin_view as
+select
+    p.full_name as player_name,
+    case
+        when r.completed_at is not null then 'Complete'
+        else 'Incomplete'
+    end as status,
+    r.round_type,
+    c.name as course_name,
+    (select count(*) from hole_scores hs where hs.round_id = r.id) as holes_entered,
+    r.started_at,
+    r.completed_at,
+    r.id as round_id,
+    r.player_id,
+    r.course_id,
+    r.event_id,
+    r.event_team_id
+from rounds r
+join players p on p.id = r.player_id
+left join courses c on c.id = r.course_id
+order by r.started_at desc;

@@ -91,6 +91,11 @@ export default function ScoreEntry() {
   const [error, setError] = useState(null)
   const [summary, setSummary] = useState(null) // holds turn/final summary data when shown
   const [summaryIsTurn, setSummaryIsTurn] = useState(false)
+  const [resumableRound, setResumableRound] = useState(null) // an incomplete round found on load, offered for resume
+  const [resumeDismissed, setResumeDismissed] = useState(false)
+  const [forPlayer, setForPlayer] = useState(null) // coach-only: entering a round on behalf of this player
+  const [pickingForPlayer, setPickingForPlayer] = useState(false)
+  const [teamRoster, setTeamRoster] = useState(null)
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => setSession(data.session))
@@ -122,6 +127,57 @@ export default function ScoreEntry() {
       .then(setCourses)
       .catch((err) => setError(err.message))
   }, [session])
+
+  // Once we know who's logged in, check whether they have a round they
+  // started and never finished (closed the app instead of hitting End
+  // Round) — offer to pick it back up instead of silently losing track.
+  useEffect(() => {
+    if (!player) return
+    apiCall(`/players/${player.id}/rounds`)
+      .then((rounds) => {
+        const mine = rounds.find((r) => !r.completed)
+        if (mine) setResumableRound(mine)
+      })
+      .catch(() => {})
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [player])
+
+  async function resumeRound() {
+    if (!resumableRound) return
+    setError(null)
+    try {
+      const course = await apiCall(`/courses/${resumableRound.course_id}`)
+      const sortedHoles = course.holes.sort((a, b) => a.hole_number - b.hole_number)
+      const scorecard = await apiCall(`/rounds/${resumableRound.id}/scorecard`)
+      let resumeIndex = sortedHoles.length - 1
+      for (let i = 0; i < scorecard.holes.length; i++) {
+        if (scorecard.holes[i].strokes === null) {
+          resumeIndex = i
+          break
+        }
+      }
+      setHoles(sortedHoles)
+      setCourseName(course.name)
+      setHoleIndex(resumeIndex)
+      setRoundType(resumableRound.round_type)
+      setSelectedCourseId(resumableRound.course_id)
+      if (resumableRound.event_id) setSelectedEventId(resumableRound.event_id)
+      if (resumableRound.event_team_id) {
+        setSelectedEventTeamId(resumableRound.event_team_id)
+        try {
+          const eventDetail = await apiCall(`/events/${resumableRound.event_id}`)
+          const myTeam = eventDetail.teams.find((t) => t.id === resumableRound.event_team_id)
+          if (myTeam) setActiveTeamName(myTeam.team_name)
+        } catch {
+          // non-fatal — the round still resumes fine without the team name label
+        }
+      }
+      setRound(resumableRound)
+      setResumableRound(null)
+    } catch (err) {
+      setError(err.message)
+    }
+  }
 
   async function apiCall(path, options = {}) {
     const token = session?.access_token
@@ -156,6 +212,7 @@ export default function ScoreEntry() {
           round_type: roundType,
           event_id: roundType === 'tournament' ? selectedEventId : null,
           event_team_id: roundType === 'tournament' && selectedEventTeamId ? selectedEventTeamId : null,
+          for_player_id: forPlayer ? forPlayer.id : null,
         }),
       })
 
@@ -231,6 +288,15 @@ export default function ScoreEntry() {
     }
   }
 
+  function saveAndExit() {
+    // Every hole already saves to the database the instant it's submitted,
+    // so "saving" here is really just leaving cleanly — the round stays
+    // incomplete and resumable, exactly like closing the app by accident,
+    // except deliberate and without losing your place in the UI.
+    setRound(null)
+    setForPlayer(null)
+  }
+
   function dismissSummary() {
     if (summaryIsTurn) {
       setSummary(null)
@@ -238,6 +304,7 @@ export default function ScoreEntry() {
       // Round fully done — reset back to the start screen
       setSummary(null)
       setRound(null)
+      setForPlayer(null)
     }
   }
 
@@ -297,11 +364,12 @@ export default function ScoreEntry() {
           {holeIndex > 0 && (
             <button style={styles.smallBtn} onClick={goToPreviousHole}>← Back</button>
           )}
+          <button style={styles.smallBtn} onClick={saveAndExit}>Save &amp; Exit</button>
           <button style={styles.smallBtnDanger} onClick={endRoundEarly}>End Round</button>
         </div>
 
         <div style={styles.playerCourseHeader}>
-          <div style={styles.playerNameHeader}>{activeTeamName || player.full_name}</div>
+          <div style={styles.playerNameHeader}>{activeTeamName || (forPlayer ? forPlayer.full_name : player.full_name)}</div>
           <div style={styles.courseNameHeader}>{courseName}</div>
         </div>
 
@@ -418,9 +486,53 @@ export default function ScoreEntry() {
       {tab === 'standings' && <Standings />}
       {tab === 'tournaments' && <Tournaments player={player} />}
       {tab === 'team' && player.role === 'coach' && <CoachDashboard />}
-      {tab === 'play' && !roundType && (
+      {tab === 'play' && !roundType && pickingForPlayer && (
         <div style={styles.page}>
+          <button style={styles.linkBtn} onClick={() => setPickingForPlayer(false)}>← Cancel</button>
+          <h2>Enter a Round For…</h2>
+          <p style={styles.subtitleText}>Pick who this round is actually for.</p>
+          {!teamRoster ? (
+            <p>Loading roster…</p>
+          ) : (
+            teamRoster.map((p) => (
+              <button
+                key={p.id}
+                style={styles.roundTypeBtn}
+                onClick={() => {
+                  setForPlayer(p)
+                  setPickingForPlayer(false)
+                }}
+              >
+                <div style={styles.roundTypeName}>{p.full_name}</div>
+              </button>
+            ))
+          )}
+        </div>
+      )}
+
+      {tab === 'play' && !roundType && !pickingForPlayer && (
+        <div style={styles.page}>
+          {resumableRound && !resumeDismissed && (
+            <div style={styles.resumeBanner}>
+              <div style={styles.resumeBannerText}>
+                <strong>Unfinished round</strong> at {resumableRound.course_name} — {resumableRound.holes_played} hole{resumableRound.holes_played === 1 ? '' : 's'} entered.
+              </div>
+              <div style={styles.resumeBannerButtons}>
+                <button style={styles.button} onClick={resumeRound}>Resume Round</button>
+                <button style={styles.linkBtn} onClick={() => setResumeDismissed(true)}>Not now</button>
+              </div>
+            </div>
+          )}
+
           <h2>Play</h2>
+
+          {forPlayer && (
+            <div style={styles.loggingForBar}>
+              <span>Entering for: <strong>{forPlayer.full_name}</strong></span>
+              <button style={styles.changeBtn} onClick={() => setForPlayer(null)}>Change</button>
+            </div>
+          )}
+
           <p style={styles.subtitleText}>What kind of round is this?</p>
 
           <button style={styles.roundTypeBtn} onClick={() => setRoundType('team')}>
@@ -449,6 +561,18 @@ export default function ScoreEntry() {
           {(player.role === 'coach' || player.role === 'captain') && (
             <button style={styles.linkBtn} onClick={() => setShowCourseSetup(true)}>
               + Add a new course
+            </button>
+          )}
+
+          {player.role === 'coach' && !forPlayer && (
+            <button
+              style={styles.linkBtn}
+              onClick={() => {
+                setPickingForPlayer(true)
+                if (!teamRoster) apiCall('/team/players').then(setTeamRoster).catch((err) => setError(err.message))
+              }}
+            >
+              📋 Enter a round for a player
             </button>
           )}
         </div>
@@ -739,6 +863,8 @@ const styles = {
   toggleActive: { background: '#004b87', color: 'white', borderColor: '#004b87' },
   topRow: {
     display: 'flex',
+    flexWrap: 'wrap',
+    gap: '0.5rem',
     justifyContent: 'space-between',
     marginBottom: '1rem',
   },
@@ -773,6 +899,34 @@ const styles = {
   },
   roundTypeName: { fontWeight: 'bold', color: '#004b87', fontSize: '1.05rem' },
   roundTypeDesc: { fontSize: '0.85rem', color: '#666', marginTop: '0.2rem' },
+  resumeBanner: {
+    background: '#fff8e1',
+    border: '2px solid #d4af37',
+    borderRadius: '0.6rem',
+    padding: '1rem',
+    marginBottom: '1.5rem',
+  },
+  resumeBannerText: { fontSize: '0.9rem', color: '#333' },
+  resumeBannerButtons: { display: 'flex', gap: '1rem', alignItems: 'center', marginTop: '0.75rem' },
+  loggingForBar: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    background: '#eef1f5',
+    borderRadius: '0.5rem',
+    padding: '0.6rem 0.9rem',
+    marginBottom: '1rem',
+    fontSize: '0.85rem',
+  },
+  changeBtn: {
+    background: 'none',
+    border: 'none',
+    color: '#004b87',
+    textDecoration: 'underline',
+    fontSize: '0.85rem',
+    cursor: 'pointer',
+    padding: 0,
+  },
   linkBtn: {
     display: 'block',
     width: '100%',

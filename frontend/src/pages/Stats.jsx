@@ -42,8 +42,18 @@ export default function Stats({ player }) {
   if (error) return <div style={styles.page}><p style={styles.error}>{error}</p></div>
   if (!stats || !rounds) return <div style={styles.page}><p>Loading…</p></div>
 
-  const teamRounds = rounds.filter((r) => r.counts_for_standings)
-  const individualRounds = rounds.filter((r) => !r.counts_for_standings)
+  const isTeam = (r) => r.round_type === 'team'
+  const completeTeamRounds = rounds.filter((r) => isTeam(r) && r.completed)
+  const completeIndividualRounds = rounds.filter((r) => !isTeam(r) && r.completed)
+  const incompleteTeamRounds = rounds.filter((r) => isTeam(r) && !r.completed)
+  const incompleteIndividualRounds = rounds.filter((r) => !isTeam(r) && !r.completed)
+
+  const ROUND_LISTS = {
+    completeTeam: { title: 'Complete Team Rounds', subtitle: 'Finished team rounds — full-length ones count toward standings', rounds: completeTeamRounds },
+    completeIndividual: { title: 'Complete Individual Rounds', subtitle: 'Finished individual, qualifier, and tournament rounds', rounds: completeIndividualRounds },
+    incompleteTeam: { title: 'Incomplete Team Rounds', subtitle: 'Team rounds started but not finished', rounds: incompleteTeamRounds },
+    incompleteIndividual: { title: 'Incomplete Individual Rounds', subtitle: 'Individual, qualifier, and tournament rounds started but not finished', rounds: incompleteIndividualRounds },
+  }
 
   function openScorecard(roundId, fromView) {
     setSelectedRoundId(roundId)
@@ -51,17 +61,13 @@ export default function Stats({ player }) {
     setView('scorecard')
   }
 
-  if (view === 'teamRounds' || view === 'individualRounds') {
-    const list = view === 'teamRounds' ? teamRounds : individualRounds
+  if (ROUND_LISTS[view]) {
+    const { title, subtitle, rounds: list } = ROUND_LISTS[view]
     return (
       <div style={styles.page}>
         <button style={styles.linkBtn} onClick={() => setView('home')}>← Back to stats</button>
-        <h2>{view === 'teamRounds' ? 'Team Rounds' : 'Individual Rounds'}</h2>
-        <p style={styles.subtitle}>
-          {view === 'teamRounds'
-            ? 'Completed 9/18-hole rounds that count toward standings'
-            : 'Practice, incomplete, and qualifier rounds — not counted in standings'}
-        </p>
+        <h2>{title}</h2>
+        <p style={styles.subtitle}>{subtitle}</p>
         {list.length === 0 ? (
           <p style={styles.muted}>No rounds here yet.</p>
         ) : (
@@ -74,6 +80,7 @@ export default function Stats({ player }) {
               <div>
                 <div style={styles.roundCourse}>
                   {r.course_name} {r.round_type === 'qualifier' && <span style={styles.badge}>Qualifier</span>}
+                  {r.round_type === 'tournament' && <span style={styles.badge}>Tournament</span>}
                 </div>
                 <div style={styles.roundDate}>
                   {new Date(r.started_at).toLocaleDateString()} · {r.holes_played} holes {r.completed ? '' : '(in progress)'}
@@ -120,13 +127,21 @@ export default function Stats({ player }) {
 
       <h3 style={styles.sectionTitle}>Round History</h3>
       <div style={styles.navGrid}>
-        <button style={styles.navBtn} onClick={() => setView('teamRounds')}>
-          <div style={styles.navBtnTitle}>Team Rounds</div>
-          <div style={styles.navBtnSub}>{teamRounds.length} · counts toward standings</div>
+        <button style={styles.navBtn} onClick={() => setView('completeTeam')}>
+          <div style={styles.navBtnTitle}>Complete Team Rounds</div>
+          <div style={styles.navBtnSub}>{completeTeamRounds.length}</div>
         </button>
-        <button style={styles.navBtn} onClick={() => setView('individualRounds')}>
-          <div style={styles.navBtnTitle}>Individual Rounds</div>
-          <div style={styles.navBtnSub}>{individualRounds.length} · practice only</div>
+        <button style={styles.navBtn} onClick={() => setView('completeIndividual')}>
+          <div style={styles.navBtnTitle}>Complete Individual Rounds</div>
+          <div style={styles.navBtnSub}>{completeIndividualRounds.length}</div>
+        </button>
+        <button style={styles.navBtn} onClick={() => setView('incompleteTeam')}>
+          <div style={styles.navBtnTitle}>Incomplete Team Rounds</div>
+          <div style={styles.navBtnSub}>{incompleteTeamRounds.length}</div>
+        </button>
+        <button style={styles.navBtn} onClick={() => setView('incompleteIndividual')}>
+          <div style={styles.navBtnTitle}>Incomplete Individual Rounds</div>
+          <div style={styles.navBtnSub}>{incompleteIndividualRounds.length}</div>
         </button>
         <button style={styles.navBtn} onClick={() => setView('combines')}>
           <div style={styles.navBtnTitle}>Combine Stats</div>
