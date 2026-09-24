@@ -1100,15 +1100,17 @@ def player_combines_summary(player_id: UUID, player=Depends(get_current_player))
 # completed (9 or 18 hole) Team Rounds, with fixed rank-based tiers.
 # ---------------------------------------------------------------------------
 
-def _standings_avg(player_id: str) -> Optional[float]:
-    """Average score-to-par across this player's completed Team Rounds that
-    were actually played to a full 9 or 18 holes. Returns None if they have
-    no qualifying rounds yet."""
+def _standings_avg(player_id: str, round_type: str = "team") -> Optional[float]:
+    """Average score-to-par across this player's completed rounds of the
+    given type, counting only ones actually played to a full 9 or 18 holes.
+    Returns None if they have no qualifying rounds yet. Used for the Lineup
+    (round_type='team'), Individual Standings (round_type='individual'),
+    and Qualifier Leaderboard (round_type='qualifier')."""
     rounds = (
         supabase.table("rounds")
         .select("id, course_id, completed_at")
         .eq("player_id", player_id)
-        .eq("round_type", "team")
+        .eq("round_type", round_type)
         .not_.is_("completed_at", "null")
         .execute()
         .data
@@ -1169,6 +1171,39 @@ def standings(team: str, player=Depends(get_current_player)):
     for i, e in enumerate(entries):
         e["rank"] = i + 1
         e["tier"] = _standings_tier(team, i + 1)
+
+    return entries
+
+
+@app.get("/round-leaderboard")
+def round_leaderboard(team: str, round_type: str, player=Depends(get_current_player)):
+    """Individual Standings (round_type='individual') and Qualifier
+    Leaderboard (round_type='qualifier') — same shape as /standings, but no
+    lineup tiers, since 'starting lineup' is specifically a team-round
+    concept."""
+    if team not in ("men", "women"):
+        raise HTTPException(400, "team must be 'men' or 'women'")
+    if round_type not in ("individual", "qualifier"):
+        raise HTTPException(400, "round_type must be 'individual' or 'qualifier'")
+
+    roster = (
+        supabase.table("players")
+        .select("id, full_name")
+        .eq("team", team)
+        .neq("role", "coach")
+        .execute()
+        .data
+    )
+
+    entries = []
+    for p in roster:
+        avg = _standings_avg(p["id"], round_type)
+        entries.append({"player_id": p["id"], "full_name": p["full_name"], "scoring_avg_to_par": avg})
+
+    entries.sort(key=lambda e: (e["scoring_avg_to_par"] is None, e["scoring_avg_to_par"]))
+
+    for i, e in enumerate(entries):
+        e["rank"] = i + 1
 
     return entries
 

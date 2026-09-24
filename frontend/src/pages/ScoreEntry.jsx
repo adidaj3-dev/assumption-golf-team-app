@@ -463,7 +463,7 @@ export default function ScoreEntry() {
           style={{ ...styles.tabBtn, ...(tab === 'standings' ? styles.tabBtnActive : {}) }}
           onClick={() => setTab('standings')}
         >
-          {player.role === 'coach' ? 'Standings' : 'Individual Standings'}
+          Standings
         </button>
         <button
           style={{ ...styles.tabBtn, ...(tab === 'tournaments' ? styles.tabBtnActive : {}) }}
@@ -890,15 +890,15 @@ const styles = {
     display: 'block',
     width: '100%',
     textAlign: 'left',
-    background: '#eef1f5',
+    background: '#004b87',
     border: 'none',
     borderRadius: '0.6rem',
     padding: '1.1rem',
     marginBottom: '0.75rem',
     cursor: 'pointer',
   },
-  roundTypeName: { fontWeight: 'bold', color: '#004b87', fontSize: '1.05rem' },
-  roundTypeDesc: { fontSize: '0.85rem', color: '#666', marginTop: '0.2rem' },
+  roundTypeName: { fontWeight: 'bold', color: 'white', fontSize: '1.05rem' },
+  roundTypeDesc: { fontSize: '0.85rem', color: '#cfe0ef', marginTop: '0.2rem' },
   resumeBanner: {
     background: '#fff8e1',
     border: '2px solid #d4af37',

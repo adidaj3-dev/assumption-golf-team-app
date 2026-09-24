@@ -102,6 +102,17 @@ export default function Scorecard({ roundId, onBack, editable }) {
   const totalStrokes = played.reduce((s, h) => s + h.strokes, 0)
   const totalPar = played.reduce((s, h) => s + h.par, 0)
 
+  const puttsCounted = played.filter((h) => h.putts !== null)
+  const totalPutts = puttsCounted.reduce((s, h) => s + h.putts, 0)
+
+  const fairwayAttempts = played.filter((h) => h.fairway_hit !== null)
+  const fairwaysHit = fairwayAttempts.filter((h) => h.fairway_hit).length
+  const fairwayPct = fairwayAttempts.length > 0 ? Math.round((100 * fairwaysHit) / fairwayAttempts.length) : null
+
+  const girAttempts = played.filter((h) => h.gir !== null)
+  const girsHit = girAttempts.filter((h) => h.gir).length
+  const girPct = girAttempts.length > 0 ? Math.round((100 * girsHit) / girAttempts.length) : null
+
   return (
     <div style={styles.page}>
       <div style={styles.topRow}>
@@ -202,6 +213,14 @@ export default function Scorecard({ roundId, onBack, editable }) {
         </table>
       </div>
 
+      {played.length > 0 && !editing && (
+        <div style={styles.summaryRow}>
+          <SummaryStat label="Putts" value={puttsCounted.length > 0 ? totalPutts : '—'} />
+          <SummaryStat label="Fairways" value={fairwayPct != null ? `${fairwayPct}%` : '—'} />
+          <SummaryStat label="GIR" value={girPct != null ? `${girPct}%` : '—'} />
+        </div>
+      )}
+
       {editing && (
         <div style={styles.editActions}>
           <button style={styles.button} onClick={saveEdits} disabled={saving}>
@@ -210,6 +229,15 @@ export default function Scorecard({ roundId, onBack, editable }) {
           <button style={styles.linkBtn} onClick={cancelEditing}>Cancel</button>
         </div>
       )}
+    </div>
+  )
+}
+
+function SummaryStat({ label, value }) {
+  return (
+    <div style={styles.summaryStat}>
+      <div style={styles.summaryValue}>{value}</div>
+      <div style={styles.summaryLabel}>{label}</div>
     </div>
   )
 }
@@ -268,6 +296,17 @@ const styles = {
   totalValue: { padding: '0.6rem 0.4rem', fontWeight: 'bold', borderTop: '2px solid #ddd', textAlign: 'center', color: colors.primary },
   totalToPar: { padding: '0.6rem 0.4rem', fontWeight: 'bold', borderTop: '2px solid #ddd', textAlign: 'center', color: colors.primary },
   editActions: { display: 'flex', gap: '1rem', alignItems: 'center', marginTop: '1.5rem' },
+  summaryRow: {
+    display: 'flex',
+    justifyContent: 'space-around',
+    background: colors.grayLight,
+    borderRadius: '0.6rem',
+    padding: '1rem',
+    marginTop: '1.25rem',
+  },
+  summaryStat: { textAlign: 'center' },
+  summaryValue: { fontSize: '1.3rem', fontWeight: 'bold', color: colors.primary },
+  summaryLabel: { fontSize: '0.75rem', color: colors.textMuted, marginTop: '0.1rem' },
   button: {
     padding: '0.9rem 1.5rem',
     background: colors.primary,
