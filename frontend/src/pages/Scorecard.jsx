@@ -19,12 +19,13 @@ async function authedFetch(path, options = {}) {
   return res.json()
 }
 
-export default function Scorecard({ roundId, onBack, editable }) {
+export default function Scorecard({ roundId, onBack, editable, onDeleted }) {
   const [data, setData] = useState(null)
   const [error, setError] = useState(null)
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(null) // holes array being edited, or null
   const [saving, setSaving] = useState(false)
+  const [deleting, setDeleting] = useState(false)
 
   useEffect(() => {
     load()
@@ -87,6 +88,20 @@ export default function Scorecard({ roundId, onBack, editable }) {
     }
   }
 
+  async function deleteRound() {
+    if (!window.confirm('Delete this round permanently? This cannot be undone.')) return
+    setDeleting(true)
+    setError(null)
+    try {
+      await authedFetch(`/rounds/${roundId}`, { method: 'DELETE' })
+      if (onDeleted) onDeleted()
+      else onBack()
+    } catch (err) {
+      setError(err.message)
+      setDeleting(false)
+    }
+  }
+
   if (error) {
     return (
       <div style={styles.page}>
@@ -118,7 +133,12 @@ export default function Scorecard({ roundId, onBack, editable }) {
       <div style={styles.topRow}>
         <button style={styles.linkBtn} onClick={onBack}>← Back</button>
         {editable && !editing && (
-          <button style={styles.editBtn} onClick={startEditing}>Edit scores</button>
+          <div style={styles.topActions}>
+            <button style={styles.editBtn} onClick={startEditing}>Edit scores</button>
+            <button style={styles.deleteBtn} onClick={deleteRound} disabled={deleting}>
+              {deleting ? 'Deleting…' : 'Delete Round'}
+            </button>
+          </div>
         )}
       </div>
       <h2>{data.course_name}</h2>
@@ -267,7 +287,8 @@ const styles = {
     borderRadius: '0.75rem',
     boxShadow: '0 2px 10px rgba(0,0,0,0.06)',
   },
-  topRow: { display: 'flex', justifyContent: 'space-between', alignItems: 'center' },
+  topRow: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.5rem' },
+  topActions: { display: 'flex', gap: '0.5rem' },
   editBtn: {
     padding: '0.5rem 0.9rem',
     fontSize: '0.85rem',
@@ -275,6 +296,16 @@ const styles = {
     borderRadius: '0.4rem',
     background: 'white',
     color: colors.primary,
+    fontWeight: 600,
+    height: 'fit-content',
+  },
+  deleteBtn: {
+    padding: '0.5rem 0.9rem',
+    fontSize: '0.85rem',
+    border: '1px solid #c62828',
+    borderRadius: '0.4rem',
+    background: 'white',
+    color: '#c62828',
     fontWeight: 600,
     height: 'fit-content',
   },

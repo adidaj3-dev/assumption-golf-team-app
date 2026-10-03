@@ -33,7 +33,7 @@ export default function Stats({ player }) {
     return <Scorecard roundId={selectedRoundId} onBack={() => setView(returnView)} />
   }
   if (view === 'roster') {
-    return <TeamRoster onBack={() => setView('home')} />
+    return <TeamRoster onBack={() => setView('home')} player={player} />
   }
   if (view === 'combines') {
     return <CombinesDashboard onBack={() => setView('home')} />

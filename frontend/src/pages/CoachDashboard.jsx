@@ -4,25 +4,33 @@ import Scorecard from './Scorecard.jsx'
 
 const API_BASE = import.meta.env.VITE_API_BASE
 
-async function authedFetch(path) {
+async function authedFetch(path, options = {}) {
   const { data: sessionData } = await supabase.auth.getSession()
   const token = sessionData.session?.access_token
   const res = await fetch(`${API_BASE}${path}`, {
-    headers: { Authorization: `Bearer ${token}` },
+    ...options,
+    headers: {
+      Authorization: `Bearer ${token}`,
+      ...(options.body ? { 'Content-Type': 'application/json' } : {}),
+      ...options.headers,
+    },
   })
   if (!res.ok) throw new Error(await res.text())
-  return res.json()
+  const text = await res.text()
+  return text ? JSON.parse(text) : null
 }
 
 const CUT_LINE = 5
 
 export default function CoachDashboard() {
-  const [view, setView] = useState('players') // 'players', 'live', 'rounds', 'scorecard'
+  const [view, setView] = useState('players') // players, live, rounds, scorecard, combines
   const [players, setPlayers] = useState(null)
   const [live, setLive] = useState(null)
   const [selectedPlayer, setSelectedPlayer] = useState(null)
   const [playerRounds, setPlayerRounds] = useState(null)
+  const [combines, setCombines] = useState(null)
   const [selectedRoundId, setSelectedRoundId] = useState(null)
+  const [returnView, setReturnView] = useState('players')
   const [error, setError] = useState(null)
 
   useEffect(() => {
@@ -44,7 +52,7 @@ export default function CoachDashboard() {
   }, [view])
 
   function openPlayer(p) {
-    setSelectedPlayer(p)
+    setSelectedPlayer({ id: p.player_id, full_name: p.full_name })
     setPlayerRounds(null)
     setError(null)
     setView('rounds')
@@ -53,9 +61,30 @@ export default function CoachDashboard() {
       .catch((err) => setError(err.message))
   }
 
-  function openRound(roundId) {
+  function openRound(roundId, from) {
     setSelectedRoundId(roundId)
+    setReturnView(from)
     setView('scorecard')
+  }
+
+  function openCombines(p) {
+    setSelectedPlayer(p)
+    setCombines(null)
+    setError(null)
+    setView('combines')
+    authedFetch(`/players/${p.id}/combines`)
+      .then(setCombines)
+      .catch((err) => setError(err.message))
+  }
+
+  async function deleteCombineSession(sessionId) {
+    if (!window.confirm('Delete this combine session permanently?')) return
+    try {
+      await authedFetch(`/combines/sessions/${sessionId}`, { method: 'DELETE' })
+      setCombines((prev) => prev.filter((c) => c.id !== sessionId))
+    } catch (err) {
+      setError(err.message)
+    }
   }
 
   if (error) {
@@ -68,7 +97,46 @@ export default function CoachDashboard() {
   }
 
   if (view === 'scorecard') {
-    return <Scorecard roundId={selectedRoundId} onBack={() => setView('rounds')} editable />
+    return (
+      <Scorecard
+        roundId={selectedRoundId}
+        editable
+        onBack={() => setView(returnView)}
+        onDeleted={() => {
+          setView(returnView)
+          if (returnView === 'live') openLive()
+          else if (selectedPlayer) openPlayer({ player_id: selectedPlayer.id, full_name: selectedPlayer.full_name })
+        }}
+      />
+    )
+  }
+
+  if (view === 'combines') {
+    return (
+      <div style={styles.page}>
+        <button style={styles.linkBtn} onClick={() => setView('players')}>← Back to team</button>
+        <h2>{selectedPlayer.full_name}'s Combine Sessions</h2>
+        <p style={styles.subtitle}>Tap "Delete" to remove a bad, duplicate, or test entry.</p>
+
+        {!combines ? (
+          <p>Loading…</p>
+        ) : combines.length === 0 ? (
+          <p>No combine sessions logged yet.</p>
+        ) : (
+          combines.map((c) => (
+            <div key={c.id} style={styles.roundRow}>
+              <div>
+                <div style={styles.roundCourse}>{c.combine_type.replace(/_/g, ' ')}</div>
+                <div style={styles.roundDate}>
+                  {c.completed_at ? new Date(c.completed_at).toLocaleDateString() : ''} · {c.total_points} pts
+                </div>
+              </div>
+              <button style={styles.deleteBtn} onClick={() => deleteCombineSession(c.id)}>Delete</button>
+            </div>
+          ))
+        )}
+      </div>
+    )
   }
 
   if (view === 'rounds') {
@@ -83,7 +151,10 @@ export default function CoachDashboard() {
     return (
       <div style={styles.page}>
         <button style={styles.linkBtn} onClick={() => setView('players')}>← Back to team</button>
-        <h2>{selectedPlayer.full_name}'s Rounds</h2>
+        <div style={styles.headerRow}>
+          <h2 style={{ margin: 0 }}>{selectedPlayer.full_name}'s Rounds</h2>
+          <button style={styles.secondaryBtn} onClick={() => openCombines(selectedPlayer)}>View Combines</button>
+        </div>
 
         {!playerRounds ? (
           <p>Loading…</p>
@@ -97,7 +168,7 @@ export default function CoachDashboard() {
                 <p style={styles.muted}>None yet.</p>
               ) : (
                 g.rounds.map((r) => (
-                  <button key={r.id} style={styles.roundRow} onClick={() => openRound(r.id)}>
+                  <button key={r.id} style={styles.roundRow} onClick={() => openRound(r.id, 'rounds')}>
                     <div>
                       <div style={styles.roundCourse}>{r.course_name}</div>
                       <div style={styles.roundDate}>
@@ -120,7 +191,7 @@ export default function CoachDashboard() {
       <div style={styles.page}>
         <button style={styles.linkBtn} onClick={() => setView('players')}>← Back to team</button>
         <h2>Live Rounds</h2>
-        <p style={styles.subtitle}>Updates every 10 seconds</p>
+        <p style={styles.subtitle}>Updates every 10 seconds · tap a round to view, edit, or delete it</p>
 
         {!live ? (
           <p>Loading…</p>
@@ -128,13 +199,13 @@ export default function CoachDashboard() {
           <p>No one is currently on the course.</p>
         ) : (
           live.map((r) => (
-            <div key={r.round_id} style={styles.roundRow}>
+            <button key={r.round_id} style={styles.roundRow} onClick={() => openRound(r.round_id, 'live')}>
               <div>
                 <div style={styles.roundCourse}>{r.player_name}</div>
                 <div style={styles.roundDate}>{r.course_name} · Hole {r.current_hole}</div>
               </div>
               <div style={styles.roundScore}>{formatToPar(r.score_to_par)}</div>
-            </div>
+            </button>
           ))
         )}
       </div>
@@ -232,7 +303,7 @@ const styles = {
     borderRadius: '0.75rem',
     boxShadow: '0 2px 10px rgba(0,0,0,0.06)',
   },
-  headerRow: { display: 'flex', justifyContent: 'space-between', alignItems: 'center' },
+  headerRow: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.5rem' },
   liveBtn: {
     padding: '0.5rem 0.9rem',
     fontSize: '0.85rem',
@@ -241,6 +312,27 @@ const styles = {
     background: 'white',
     color: '#c62828',
     fontWeight: 600,
+  },
+  secondaryBtn: {
+    padding: '0.5rem 0.9rem',
+    fontSize: '0.85rem',
+    border: '1px solid #004b87',
+    borderRadius: '0.4rem',
+    background: 'white',
+    color: '#004b87',
+    fontWeight: 600,
+    cursor: 'pointer',
+  },
+  deleteBtn: {
+    padding: '0.4rem 0.9rem',
+    fontSize: '0.85rem',
+    border: '1px solid #c62828',
+    borderRadius: '0.4rem',
+    background: 'white',
+    color: '#c62828',
+    fontWeight: 600,
+    cursor: 'pointer',
+    flexShrink: 0,
   },
   subtitle: { color: '#666', marginTop: '0.3rem', marginBottom: '1.5rem' },
   cutLine: {

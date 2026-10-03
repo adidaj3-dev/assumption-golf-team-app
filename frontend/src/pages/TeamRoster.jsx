@@ -15,13 +15,14 @@ async function authedFetch(path) {
   return res.json()
 }
 
-export default function TeamRoster({ onBack }) {
+export default function TeamRoster({ onBack, player }) {
   const [view, setView] = useState('roster') // 'roster', 'rounds', 'scorecard'
   const [roster, setRoster] = useState(null)
   const [selectedPlayer, setSelectedPlayer] = useState(null)
   const [rounds, setRounds] = useState(null)
   const [selectedRoundId, setSelectedRoundId] = useState(null)
   const [error, setError] = useState(null)
+  const isCoach = player?.role === 'coach'
 
   useEffect(() => {
     authedFetch('/team/players').then(setRoster).catch((err) => setError(err.message))
@@ -35,6 +36,12 @@ export default function TeamRoster({ onBack }) {
     authedFetch(`/players/${p.id}/rounds`).then(setRounds).catch((err) => setError(err.message))
   }
 
+  function reloadRounds() {
+    setView('rounds')
+    setRounds(null)
+    authedFetch(`/players/${selectedPlayer.id}/rounds`).then(setRounds).catch((err) => setError(err.message))
+  }
+
   if (error) {
     return (
       <div style={styles.page}>
@@ -45,7 +52,14 @@ export default function TeamRoster({ onBack }) {
   }
 
   if (view === 'scorecard') {
-    return <Scorecard roundId={selectedRoundId} onBack={() => setView('rounds')} />
+    return (
+      <Scorecard
+        roundId={selectedRoundId}
+        editable={isCoach}
+        onBack={() => setView('rounds')}
+        onDeleted={reloadRounds}
+      />
+    )
   }
 
   if (view === 'rounds') {

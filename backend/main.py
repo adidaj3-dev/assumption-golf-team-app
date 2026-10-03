@@ -392,7 +392,12 @@ def round_summary(round_id: UUID, player=Depends(get_current_player)):
 def player_rounds(player_id: UUID, player=Depends(get_current_player)):
     """Lists every round a player has (in-progress or completed), newest
     first, with a quick summary of each — used for the coach's per-player
-    round history view."""
+    round history view.
+
+    Batched into 3 queries total (rounds, all hole_scores, all course holes)
+    instead of 2 extra round-trips PER round — the old version was doing
+    dozens of sequential Supabase calls for a player with a full season of
+    rounds, which was a big part of the app feeling slow."""
     # Any signed-in teammate can view any player's stats/rounds — small-team
     # transparency, not just coach-only.
 
@@ -405,18 +410,37 @@ def player_rounds(player_id: UUID, player=Depends(get_current_player)):
         .data
     )
 
+    if not rounds:
+        return []
+
+    round_ids = [r["id"] for r in rounds]
+    course_ids = list({r["course_id"] for r in rounds if r["course_id"]})
+
+    all_scores = (
+        supabase.table("hole_scores")
+        .select("round_id, strokes, holes(par)")
+        .in_("round_id", round_ids)
+        .execute()
+        .data
+    )
+    scores_by_round = {}
+    for s in all_scores:
+        scores_by_round.setdefault(s["round_id"], []).append(s)
+
+    all_holes = (
+        supabase.table("holes").select("course_id").in_("course_id", course_ids).execute().data
+        if course_ids else []
+    )
+    hole_count_by_course = {}
+    for h in all_holes:
+        hole_count_by_course[h["course_id"]] = hole_count_by_course.get(h["course_id"], 0) + 1
+
     results = []
     for r in rounds:
-        scores = (
-            supabase.table("hole_scores")
-            .select("strokes, holes(par)")
-            .eq("round_id", r["id"])
-            .execute()
-            .data
-        )
+        scores = scores_by_round.get(r["id"], [])
         total_strokes = sum(s["strokes"] for s in scores)
         total_par = sum(s["holes"]["par"] for s in scores)
-        course_total_holes = _course_hole_count(r["course_id"])
+        course_total_holes = hole_count_by_course.get(r["course_id"], 0)
         is_complete_length = len(scores) in (9, 18) and len(scores) == course_total_holes
         counts_for_standings = (
             r["round_type"] == "team" and r["completed_at"] is not None and is_complete_length
@@ -529,6 +553,94 @@ def player_stats(player_id: UUID, player=Depends(get_current_player)):
     return _compute_player_stats(str(player_id))
 
 
+def _compute_bulk_stats(player_ids: list[str]) -> dict:
+    """Same output as calling _compute_player_stats() once per player, but in
+    3 queries total instead of 3 queries PER player — this is what the coach's
+    Team tab loads every time it opens, so for a full roster the old version
+    meant dozens of sequential round-trips to Supabase. This was the single
+    biggest cause of the app feeling slow."""
+    if not player_ids:
+        return {}
+
+    completed_rounds = (
+        supabase.table("rounds")
+        .select("id, player_id, completed_at")
+        .in_("player_id", player_ids)
+        .not_.is_("completed_at", "null")
+        .order("completed_at", desc=True)
+        .execute()
+        .data
+    )
+
+    by_player = {}
+    for r in completed_rounds:
+        by_player.setdefault(r["player_id"], []).append(r)
+
+    all_round_ids = [r["id"] for r in completed_rounds]
+    all_scores = (
+        supabase.table("hole_scores")
+        .select("round_id, strokes, putts, fairway_hit, gir, holes(hole_number, par)")
+        .in_("round_id", all_round_ids)
+        .execute()
+        .data
+        if all_round_ids else []
+    )
+    scores_by_round = {}
+    for s in all_scores:
+        scores_by_round.setdefault(s["round_id"], []).append(s)
+
+    results = {}
+    for pid in player_ids:
+        rounds_for_player = by_player.get(pid, [])
+        if not rounds_for_player:
+            results[pid] = {"rounds_played": 0, "last_round": None}
+            continue
+
+        total_score_to_par = 0
+        fairways_hit = fairways_total = 0
+        girs_hit = holes_total = 0
+        putts_total = 0
+
+        for r in rounds_for_player:
+            for s in scores_by_round.get(r["id"], []):
+                total_score_to_par += s["strokes"] - s["holes"]["par"]
+                holes_total += 1
+                if s["gir"]:
+                    girs_hit += 1
+                if s["fairway_hit"] is not None:
+                    fairways_total += 1
+                    if s["fairway_hit"]:
+                        fairways_hit += 1
+                if s["putts"]:
+                    putts_total += s["putts"]
+
+        most_recent = rounds_for_player[0]
+        last_scores = scores_by_round.get(most_recent["id"], [])
+        front = [s for s in last_scores if s["holes"]["hole_number"] <= 9]
+        back = [s for s in last_scores if s["holes"]["hole_number"] > 9]
+
+        def to_par(scores):
+            if not scores:
+                return None
+            return sum(s["strokes"] for s in scores) - sum(s["holes"]["par"] for s in scores)
+
+        results[pid] = {
+            "rounds_played": len(rounds_for_player),
+            "scoring_avg_to_par": round(total_score_to_par / len(rounds_for_player), 2),
+            "gir_pct": round(100 * girs_hit / holes_total, 1) if holes_total else None,
+            "fairway_pct": round(100 * fairways_hit / fairways_total, 1) if fairways_total else None,
+            "putts_per_round": round(putts_total / len(rounds_for_player), 2),
+            "last_round": {
+                "date": most_recent["completed_at"],
+                "front9_to_par": to_par(front),
+                "back9_to_par": to_par(back),
+                "total_to_par": to_par(last_scores),
+            },
+        }
+
+    return results
+
+
 @app.get("/coach/team-stats")
 def team_stats(player=Depends(get_current_player)):
     """Coach-only: every player's stats in one call, for the coach dashboard."""
@@ -544,12 +656,12 @@ def team_stats(player=Depends(get_current_player)):
         .data
     )
 
-    results = []
-    for p in all_players:
-        stats = _compute_player_stats(p["id"])
-        results.append({"player_id": p["id"], "full_name": p["full_name"], "role": p["role"], **stats})
+    stats_by_player = _compute_bulk_stats([p["id"] for p in all_players])
 
-    return results
+    return [
+        {"player_id": p["id"], "full_name": p["full_name"], "role": p["role"], **stats_by_player[p["id"]]}
+        for p in all_players
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -853,8 +965,10 @@ def get_combine(slug: str):
     return {"slug": slug, **definition}
 
 
-@app.post("/combines/{slug}/submit")
-def submit_combine(slug: str, submission: CombineSubmitIn, player=Depends(get_current_player)):
+def _score_combine_attempts(slug: str, attempts: list[str]) -> int:
+    """Validates and scores a combine's attempt list — shared by new
+    submissions and by the coach editing an existing session, so both stay
+    consistent."""
     definition = COMBINE_DEFINITIONS.get(slug)
     if not definition:
         raise HTTPException(404, "Combine not found")
@@ -867,10 +981,10 @@ def submit_combine(slug: str, submission: CombineSubmitIn, player=Depends(get_cu
     else:
         expected_length = definition["attempts"]
 
-    if len(submission.attempts) != expected_length:
-        raise HTTPException(400, f"Expected {expected_length} attempts, got {len(submission.attempts)}")
+    if len(attempts) != expected_length:
+        raise HTTPException(400, f"Expected {expected_length} attempts, got {len(attempts)}")
 
-    for code in submission.attempts:
+    for code in attempts:
         if code not in valid_codes:
             raise HTTPException(400, f"Invalid result code: {code}")
 
@@ -878,12 +992,56 @@ def submit_combine(slug: str, submission: CombineSubmitIn, player=Depends(get_cu
         per_group = definition["sub_attempts_per_group"]
         total_points = 0
         for g in range(len(definition["groups"])):
-            group_codes = submission.attempts[g * per_group:(g + 1) * per_group]
+            group_codes = attempts[g * per_group:(g + 1) * per_group]
             if all(code == "make" for code in group_codes):
                 total_points += 1
     else:
         points_by_code = {r["code"]: r["points"] for r in definition["results"]}
-        total_points = sum(points_by_code[code] for code in submission.attempts)
+        total_points = sum(points_by_code[code] for code in attempts)
+
+    return total_points
+
+
+class CombineEditIn(BaseModel):
+    attempts: list[str]
+
+
+@app.patch("/combines/sessions/{session_id}")
+def edit_combine_session(session_id: UUID, edit: CombineEditIn, player=Depends(get_current_player)):
+    """Coach-only: corrects a logged combine session (e.g. a mis-tap during
+    entry) by re-scoring a replacement attempts list."""
+    if player["role"] != "coach":
+        raise HTTPException(403, "Coach access only")
+
+    session = supabase.table("combine_sessions").select("*").eq("id", str(session_id)).single().execute().data
+    if not session:
+        raise HTTPException(404, "Combine session not found")
+
+    total_points = _score_combine_attempts(session["combine_type"], edit.attempts)
+    updated = supabase.table("combine_sessions").update(
+        {"attempts": edit.attempts, "total_points": total_points}
+    ).eq("id", str(session_id)).execute().data[0]
+    return updated
+
+
+@app.delete("/combines/sessions/{session_id}")
+def delete_combine_session(session_id: UUID, player=Depends(get_current_player)):
+    """Coach-only: removes a bad/duplicate/test combine session entirely."""
+    if player["role"] != "coach":
+        raise HTTPException(403, "Coach access only")
+
+    session = supabase.table("combine_sessions").select("id").eq("id", str(session_id)).single().execute().data
+    if not session:
+        raise HTTPException(404, "Combine session not found")
+
+    supabase.table("combine_sessions").delete().eq("id", str(session_id)).execute()
+    return {"deleted": True}
+
+
+@app.post("/combines/{slug}/submit")
+def submit_combine(slug: str, submission: CombineSubmitIn, player=Depends(get_current_player)):
+    total_points = _score_combine_attempts(slug, submission.attempts)
+    definition = COMBINE_DEFINITIONS[slug]
 
     # Who this combine is actually FOR — defaults to whoever is logged in,
     # but can be a teammate (validated as a real player) if logged on their
@@ -966,15 +1124,24 @@ def live_rounds(player=Depends(get_current_player)):
         .data
     )
 
+    if not rounds:
+        return []
+
+    round_ids = [r["id"] for r in rounds]
+    all_scores = (
+        supabase.table("hole_scores")
+        .select("round_id, strokes, holes(hole_number, par)")
+        .in_("round_id", round_ids)
+        .execute()
+        .data
+    )
+    scores_by_round = {}
+    for s in all_scores:
+        scores_by_round.setdefault(s["round_id"], []).append(s)
+
     results = []
     for r in rounds:
-        scores = (
-            supabase.table("hole_scores")
-            .select("strokes, holes(hole_number, par)")
-            .eq("round_id", r["id"])
-            .execute()
-            .data
-        )
+        scores = scores_by_round.get(r["id"], [])
         total_strokes = sum(s["strokes"] for s in scores)
         total_par = sum(s["holes"]["par"] for s in scores)
         last_hole = max((s["holes"]["hole_number"] for s in scores), default=0)
@@ -1038,8 +1205,26 @@ def round_scorecard(round_id: UUID, player=Depends(get_current_player)):
         "course_name": course["name"] if course else "Unknown course",
         "started_at": round_row["started_at"],
         "completed_at": round_row["completed_at"],
+        "can_edit": _can_write_round(round_row, player),
         "holes": holes_out,
     }
+
+
+@app.delete("/rounds/{round_id}")
+def delete_round(round_id: UUID, player=Depends(get_current_player)):
+    """Coach-only: permanently deletes a round and its hole scores. For
+    dormant/stuck in-progress rounds (a player closed the app mid-round and
+    never came back) as well as cleaning up test or mistaken entries."""
+    if player["role"] != "coach":
+        raise HTTPException(403, "Coach access only")
+
+    round_row = supabase.table("rounds").select("id").eq("id", str(round_id)).single().execute().data
+    if not round_row:
+        raise HTTPException(404, "Round not found")
+
+    supabase.table("hole_scores").delete().eq("round_id", str(round_id)).execute()
+    supabase.table("rounds").delete().eq("id", str(round_id)).execute()
+    return {"deleted": True}
 
 
 @app.get("/players/{player_id}/combines/summary")
