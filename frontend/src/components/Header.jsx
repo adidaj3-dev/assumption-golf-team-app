@@ -1,6 +1,20 @@
+import { useEffect, useState } from 'react'
+import { supabase } from '../supabaseClient.js'
 import { colors, fonts, LOGO_URL, NE10_URL } from '../theme.js'
 
+// Header tracks its own session (instead of taking it as a prop) so the
+// Sign Out button is always available on every screen — including a
+// broken/stuck loading screen elsewhere in the app, which is exactly the
+// situation a signed-in-but-can't-proceed player needs a way out of.
 export default function Header() {
+  const [session, setSession] = useState(null)
+
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data }) => setSession(data.session))
+    const { data: listener } = supabase.auth.onAuthStateChange((_e, s) => setSession(s))
+    return () => listener.subscription.unsubscribe()
+  }, [])
+
   return (
     <div style={styles.bar}>
       <div style={styles.inner}>
@@ -12,7 +26,14 @@ export default function Header() {
             <div style={styles.subtitle}>GREYHOUNDS ATHLETICS</div>
           </div>
         </div>
-        <img src={NE10_URL} alt="Northeast-10 Conference" style={styles.ne10Img} />
+        <div style={styles.right}>
+          <img src={NE10_URL} alt="Northeast-10 Conference" style={styles.ne10Img} />
+          {session && (
+            <button style={styles.signOutBtn} onClick={() => supabase.auth.signOut()}>
+              Sign Out
+            </button>
+          )}
+        </div>
       </div>
     </div>
   )
@@ -64,9 +85,26 @@ const styles = {
     letterSpacing: '0.1em',
     marginTop: '0.1rem',
   },
+  right: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '0.6rem',
+    flexShrink: 0,
+  },
   ne10Img: {
     height: 24,
     objectFit: 'contain',
     flexShrink: 0,
+  },
+  signOutBtn: {
+    background: 'none',
+    border: `1px solid ${colors.gray}`,
+    borderRadius: '0.4rem',
+    color: colors.textMuted,
+    fontSize: '0.68rem',
+    fontWeight: 600,
+    letterSpacing: '0.03em',
+    padding: '0.3rem 0.5rem',
+    whiteSpace: 'nowrap',
   },
 }

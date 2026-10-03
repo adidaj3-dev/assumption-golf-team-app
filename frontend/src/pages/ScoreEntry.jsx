@@ -117,7 +117,13 @@ export default function ScoreEntry() {
       .single()
       .then(({ data, error: playerError }) => {
         if (playerError) {
-          setError(`Couldn't load your player profile: ${playerError.message}`)
+          // "Cannot coerce..." means this login has no matching row in the
+          // players table at all — almost always a second/duplicate account,
+          // not a real bug. Sign Out (in the header) lets them switch accounts
+          // instead of being stuck on a loading screen with no way out.
+          setError(
+            "This login doesn't have a player profile set up. If you have another account you normally use, use Sign Out above and sign in with that one instead."
+          )
           return
         }
         setPlayer(data)
@@ -315,8 +321,16 @@ export default function ScoreEntry() {
   if (!player) {
     return (
       <div style={styles.page}>
-        <p>Loading…</p>
-        {error && <p style={styles.error}>{error}</p>}
+        {error ? (
+          <>
+            <p style={styles.error}>{error}</p>
+            <button style={styles.button} onClick={() => supabase.auth.signOut()}>
+              Sign Out
+            </button>
+          </>
+        ) : (
+          <p>Loading…</p>
+        )}
       </div>
     )
   }
