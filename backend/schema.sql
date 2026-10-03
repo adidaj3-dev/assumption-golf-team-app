@@ -274,3 +274,39 @@ create trigger rounds_admin_view_delete
     instead of delete on rounds_admin_view
     for each row
     execute function delete_round_via_admin_view();
+
+-- Qualifier scorecard marking: for a Qualifier round, a groupmate can enter
+-- the official strokes on your behalf (real-tournament style) while you
+-- separately log your own putts/fairway/GIR for the same round. marked_by
+-- is who's entering strokes when that's someone other than the round's own
+-- player; null for every normal (non-marked) round.
+alter table rounds add column marked_by uuid references players(id);
+
+-- 4 tee-time groups the coach sets before a qualifier. Re-set wholesale
+-- each time (the backend deletes and re-inserts all 4 on save) rather than
+-- keeping event-by-event history — see PUT /qualifier/groups.
+create table qualifier_groups (
+    id uuid primary key default gen_random_uuid(),
+    group_number int not null check (group_number between 1 and 4),
+    tee_time text,
+    unique (group_number)
+);
+
+-- A player can only be in one group at a time.
+create table qualifier_group_members (
+    id uuid primary key default gen_random_uuid(),
+    qualifier_group_id uuid not null references qualifier_groups(id) on delete cascade,
+    player_id uuid not null references players(id) on delete cascade,
+    unique (player_id)
+);
+
+alter table qualifier_groups enable row level security;
+alter table qualifier_group_members enable row level security;
+
+-- Everyone can read the groups (so a player can see their own tee time and
+-- groupmates); only the backend (service role, gated to coach in Python)
+-- ever writes them.
+create policy "anyone signed in reads qualifier_groups" on qualifier_groups
+    for select using (auth.role() = 'authenticated');
+create policy "anyone signed in reads qualifier_group_members" on qualifier_group_members
+    for select using (auth.role() = 'authenticated');

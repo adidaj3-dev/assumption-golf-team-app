@@ -71,15 +71,35 @@ class RoundStartIn(BaseModel):
     round_type: str = "individual"  # 'team' | 'individual' | 'qualifier' | 'tournament'
     event_id: Optional[UUID] = None  # set when round_type == 'tournament'
     event_team_id: Optional[UUID] = None  # set for team-ball formats (scramble, alt shot)
-    for_player_id: Optional[UUID] = None  # coach-only: create this round for another player
+    # Coach: create this round for any player. Non-coach: mark a qualifier-
+    # group teammate's scorecard (only valid when round_type == 'qualifier'
+    # and both players are in the same qualifier group) — see start_round.
+    for_player_id: Optional[UUID] = None
 
 
 class HoleScoreIn(BaseModel):
     hole_id: UUID
-    strokes: int
+    # Optional (not just nullable) so a request can supply ONLY strokes, or
+    # ONLY the stats fields, without the other side's data in the payload at
+    # all — see submit_hole_score, which merges whichever fields were
+    # actually sent onto whatever's already stored instead of overwriting
+    # the whole row. This is what lets a qualifier-group teammate enter your
+    # strokes while you separately log your own putts/fairway/GIR for the
+    # same hole without either of you erasing the other's entry.
+    strokes: Optional[int] = None
     putts: Optional[int] = None
     fairway_hit: Optional[bool] = None
     gir: Optional[bool] = None
+
+
+class QualifierGroupIn(BaseModel):
+    group_number: int
+    tee_time: Optional[str] = None
+    player_ids: list[UUID] = []
+
+
+class QualifierGroupsIn(BaseModel):
+    groups: list[QualifierGroupIn]
 
 
 class TournamentIn(BaseModel):
@@ -232,13 +252,41 @@ def start_round(r: RoundStartIn, player=Depends(get_current_player)):
         raise HTTPException(400, f"Invalid round_type: {r.round_type}")
 
     target_player_id = player["id"]
+    marked_by = None
     if r.for_player_id is not None:
-        if player["role"] != "coach":
-            raise HTTPException(403, "Only a coach can start a round for another player")
         target = supabase.table("players").select("id").eq("id", str(r.for_player_id)).single().execute().data
         if not target:
             raise HTTPException(400, "Selected player not found")
-        target_player_id = str(r.for_player_id)
+
+        if player["role"] == "coach":
+            target_player_id = str(r.for_player_id)
+        else:
+            # Non-coach: this is a qualifier-group teammate marking another
+            # teammate's scorecard (real-tournament-style — you keep a
+            # groupmate's strokes, they separately log their own putts/
+            # fairway/GIR). Only allowed within the same qualifier group.
+            if r.round_type != "qualifier":
+                raise HTTPException(403, "You can only mark a teammate's scorecard for a Qualifier round")
+            if not _same_qualifier_group(player["id"], str(r.for_player_id)):
+                raise HTTPException(403, "You're not in the same qualifier group as that player")
+            target_player_id = str(r.for_player_id)
+            marked_by = player["id"]
+
+            # Resume the round already in progress rather than starting a
+            # second, competing scorecard for the same player.
+            existing = (
+                supabase.table("rounds")
+                .select("*")
+                .eq("player_id", target_player_id)
+                .eq("round_type", "qualifier")
+                .eq("marked_by", marked_by)
+                .is_("completed_at", "null")
+                .order("started_at", desc=True)
+                .execute()
+                .data
+            )
+            if existing:
+                return existing[0]
 
     if r.round_type == "tournament":
         if not r.event_id:
@@ -286,19 +334,38 @@ def start_round(r: RoundStartIn, player=Depends(get_current_player)):
             "round_type": r.round_type,
             "event_id": str(r.event_id) if r.event_id else None,
             "event_team_id": str(r.event_team_id) if r.event_team_id else None,
+            "marked_by": marked_by,
         }
     ).execute().data[0]
     return row
 
 
+def _same_qualifier_group(player_id_a: str, player_id_b: str) -> bool:
+    rows = (
+        supabase.table("qualifier_group_members")
+        .select("qualifier_group_id, player_id")
+        .in_("player_id", [player_id_a, player_id_b])
+        .execute()
+        .data
+    )
+    group_a = next((r["qualifier_group_id"] for r in rows if r["player_id"] == player_id_a), None)
+    group_b = next((r["qualifier_group_id"] for r in rows if r["player_id"] == player_id_b), None)
+    return group_a is not None and group_a == group_b
+
+
 def _can_write_round(round_row: dict, player: dict) -> bool:
     """A round can be written to by whoever started it — OR, for team-ball
     rounds, by any member of that event team, since the whole point is that
-    any teammate can pick up the shared scorecard — OR, always, by a coach,
-    so mistakes can be corrected without touching the database directly."""
+    any teammate can pick up the shared scorecard — OR, for a qualifier
+    round, by whoever is marking it (round_row["marked_by"]), who enters
+    strokes while the round's own player separately enters their own stats
+    — OR, always, by a coach, so mistakes can be corrected without touching
+    the database directly."""
     if player["role"] == "coach":
         return True
     if round_row["player_id"] == player["id"]:
+        return True
+    if round_row.get("marked_by") == player["id"]:
         return True
     if round_row.get("event_team_id"):
         members = (
@@ -318,12 +385,39 @@ def submit_hole_score(round_id: UUID, score: HoleScoreIn, player=Depends(get_cur
     if not round_row or not _can_write_round(round_row, player):
         raise HTTPException(403, "Not your round")
 
-    score_data = score.model_dump()
-    score_data["hole_id"] = str(score_data["hole_id"])
+    hole_id = str(score.hole_id)
+    # Only merge in the fields the caller actually sent (model_fields_set),
+    # not every field HoleScoreIn knows about — this is what lets a
+    # qualifier-group marker send {hole_id, strokes} and the round's own
+    # player separately send {hole_id, putts, fairway_hit, gir} for the same
+    # hole without either one wiping out what the other already saved.
+    provided = score.model_fields_set - {"hole_id"}
+
+    existing = (
+        supabase.table("hole_scores")
+        .select("*")
+        .eq("round_id", str(round_id))
+        .eq("hole_id", hole_id)
+        .execute()
+        .data
+    )
+    existing_row = existing[0] if existing else None
+
+    if existing_row is None and "strokes" not in provided:
+        raise HTTPException(
+            400,
+            "This hole hasn't been scored yet — ask whoever's marking your card to enter the strokes first.",
+        )
+
+    update = {"round_id": str(round_id), "hole_id": hole_id}
+    for field in ("strokes", "putts", "fairway_hit", "gir"):
+        if field in provided:
+            update[field] = getattr(score, field)
+        elif existing_row is not None:
+            update[field] = existing_row[field]
 
     row = supabase.table("hole_scores").upsert(
-        {"round_id": str(round_id), **score_data},
-        on_conflict="round_id,hole_id",
+        update, on_conflict="round_id,hole_id",
     ).execute().data[0]
     return row
 
@@ -403,7 +497,7 @@ def player_rounds(player_id: UUID, player=Depends(get_current_player)):
 
     rounds = (
         supabase.table("rounds")
-        .select("id, started_at, completed_at, round_type, course_id, event_id, event_team_id, courses(name)")
+        .select("id, started_at, completed_at, round_type, course_id, event_id, event_team_id, marked_by, courses(name)")
         .eq("player_id", str(player_id))
         .order("started_at", desc=True)
         .execute()
@@ -454,6 +548,7 @@ def player_rounds(player_id: UUID, player=Depends(get_current_player)):
             "round_type": r["round_type"],
             "event_id": r["event_id"],
             "event_team_id": r["event_team_id"],
+            "marked_by": r["marked_by"],
             "holes_played": len(scores),
             "score_to_par": (total_strokes - total_par) if scores else None,
             "completed": r["completed_at"] is not None,
@@ -467,6 +562,100 @@ def _course_hole_count(course_id: str) -> int:
     actually played to completion (9 or 18 holes) for standings purposes."""
     holes = supabase.table("holes").select("id").eq("course_id", course_id).execute().data
     return len(holes)
+
+
+# ---------------------------------------------------------------------------
+# Qualifier Groups — 4 tee-time groups the coach sets before a qualifier,
+# used to let a player mark a groupmate's scorecard (see start_round and
+# _same_qualifier_group) instead of only ever entering their own.
+# ---------------------------------------------------------------------------
+
+@app.get("/qualifier/groups")
+def get_qualifier_groups(player=Depends(get_current_player)):
+    """All 4 groups with their members — used by the coach's setup screen."""
+    groups = (
+        supabase.table("qualifier_groups")
+        .select("id, group_number, tee_time")
+        .order("group_number")
+        .execute()
+        .data
+    )
+    members = (
+        supabase.table("qualifier_group_members")
+        .select("qualifier_group_id, players(id, full_name)")
+        .execute()
+        .data
+    )
+    members_by_group = {}
+    for m in members:
+        members_by_group.setdefault(m["qualifier_group_id"], []).append(m["players"])
+
+    return [
+        {
+            "group_number": g["group_number"],
+            "tee_time": g["tee_time"],
+            "members": sorted(members_by_group.get(g["id"], []), key=lambda p: p["full_name"]),
+        }
+        for g in groups
+    ]
+
+
+@app.put("/qualifier/groups")
+def save_qualifier_groups(body: QualifierGroupsIn, player=Depends(get_current_player)):
+    """Coach-only: replaces all 4 groups wholesale — the coach re-sets these
+    before each qualifier rather than maintaining event-by-event history."""
+    if player["role"] != "coach":
+        raise HTTPException(403, "Coach access only")
+    if len(body.groups) > 4 or any(g.group_number not in (1, 2, 3, 4) for g in body.groups):
+        raise HTTPException(400, "There can only be groups numbered 1 through 4")
+
+    existing_ids = [g["id"] for g in supabase.table("qualifier_groups").select("id").execute().data]
+    if existing_ids:
+        supabase.table("qualifier_group_members").delete().in_("qualifier_group_id", existing_ids).execute()
+        supabase.table("qualifier_groups").delete().in_("id", existing_ids).execute()
+
+    for g in body.groups:
+        row = supabase.table("qualifier_groups").insert(
+            {"group_number": g.group_number, "tee_time": g.tee_time}
+        ).execute().data[0]
+        if g.player_ids:
+            supabase.table("qualifier_group_members").insert(
+                [{"qualifier_group_id": row["id"], "player_id": str(pid)} for pid in g.player_ids]
+            ).execute()
+
+    return get_qualifier_groups(player)
+
+
+@app.get("/qualifier/my-group")
+def get_my_qualifier_group(player=Depends(get_current_player)):
+    """The current player's own group + groupmates — used to offer 'mark a
+    teammate's scorecard' when starting a Qualifier round. Returns an empty
+    group if the coach hasn't assigned one (so the frontend can just fall
+    through to the normal course picker)."""
+    membership = (
+        supabase.table("qualifier_group_members")
+        .select("qualifier_group_id")
+        .eq("player_id", player["id"])
+        .execute()
+        .data
+    )
+    if not membership:
+        return {"group_number": None, "tee_time": None, "members": []}
+
+    group_id = membership[0]["qualifier_group_id"]
+    group = supabase.table("qualifier_groups").select("group_number, tee_time").eq("id", group_id).single().execute().data
+    members = (
+        supabase.table("qualifier_group_members")
+        .select("players(id, full_name)")
+        .eq("qualifier_group_id", group_id)
+        .execute()
+        .data
+    )
+    return {
+        "group_number": group["group_number"],
+        "tee_time": group["tee_time"],
+        "members": sorted((m["players"] for m in members), key=lambda p: p["full_name"]),
+    }
 
 
 def _compute_player_stats(player_id: str) -> dict:

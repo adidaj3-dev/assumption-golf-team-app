@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { supabase } from '../supabaseClient.js'
 import Login from './Login.jsx'
 import CourseSetup from './CourseSetup.jsx'
+import QualifierGroups from './QualifierGroups.jsx'
 import RoundSummary from './RoundSummary.jsx'
 import Stats from './Stats.jsx'
 import CoachDashboard from './CoachDashboard.jsx'
@@ -96,6 +97,9 @@ export default function ScoreEntry() {
   const [forPlayer, setForPlayer] = useState(null) // coach-only: entering a round on behalf of this player
   const [pickingForPlayer, setPickingForPlayer] = useState(false)
   const [teamRoster, setTeamRoster] = useState(null)
+  const [qualifierGroup, setQualifierGroup] = useState(null) // { group_number, tee_time, members } for the current player, once Qualifier is picked
+  const [qualifierOwnChosen, setQualifierOwnChosen] = useState(false) // true once they pick "Enter My Own Round" instead of marking a teammate
+  const [showQualifierGroups, setShowQualifierGroups] = useState(false) // coach-only: the group setup screen
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => setSession(data.session))
@@ -155,9 +159,15 @@ export default function ScoreEntry() {
       const course = await apiCall(`/courses/${resumableRound.course_id}`)
       const sortedHoles = course.holes.sort((a, b) => a.hole_number - b.hole_number)
       const scorecard = await apiCall(`/rounds/${resumableRound.id}/scorecard`)
+      // This round list is always MY OWN rounds (player_id === me), so if
+      // marked_by is set to someone else, I'm the one being marked — resume
+      // at the first hole missing MY stats (putts), not strokes, since
+      // strokes aren't mine to enter here.
+      const amBeingMarked = resumableRound.marked_by && resumableRound.marked_by !== player.id
       let resumeIndex = sortedHoles.length - 1
       for (let i = 0; i < scorecard.holes.length; i++) {
-        if (scorecard.holes[i].strokes === null) {
+        const notYetDone = amBeingMarked ? scorecard.holes[i].putts === null : scorecard.holes[i].strokes === null
+        if (notYetDone) {
           resumeIndex = i
           break
         }
@@ -233,28 +243,39 @@ export default function ScoreEntry() {
 
   async function submitHole() {
     const hole = holes[holeIndex]
+    // Qualifier scorecard marking: the marker (someone else's round, which
+    // they started) sends strokes only; the round's own player, when a
+    // groupmate is marking them, sends only their own stats — never both,
+    // so neither side's entry can clobber the other's (see submit_hole_score).
+    const isMarkingSomeoneElse = round.marked_by === player.id && round.player_id !== player.id
+    const isBeingMarkedByOther = round.player_id === player.id && round.marked_by && round.marked_by !== player.id
     try {
-      await apiCall(`/rounds/${round.id}/holes`, {
-        method: 'POST',
-        body: JSON.stringify({
-          hole_id: hole.id,
-          strokes: form.strokes,
-          putts: form.putts,
-          fairway_hit: hole.par === 3 ? null : form.fairway_hit,
-          gir: form.gir,
-        }),
-      })
+      const payload = { hole_id: hole.id }
+      if (!isBeingMarkedByOther) payload.strokes = form.strokes
+      if (!isMarkingSomeoneElse) {
+        payload.putts = form.putts
+        payload.fairway_hit = hole.par === 3 ? null : form.fairway_hit
+        payload.gir = form.gir
+      }
+      await apiCall(`/rounds/${round.id}/holes`, { method: 'POST', body: JSON.stringify(payload) })
       setForm({ strokes: null, putts: null, fairway_hit: null, gir: null })
 
       const holesJustCompleted = holeIndex + 1
 
       if (holesJustCompleted === holes.length) {
-        // Finished the whole round
-        await apiCall(`/rounds/${round.id}/complete`, { method: 'POST' })
-        const finalSummary = await apiCall(`/rounds/${round.id}/summary`)
-        setSummary(finalSummary)
-        setSummaryIsTurn(false)
-      } else if (holesJustCompleted === 9 && holes.length > 9) {
+        if (isBeingMarkedByOther) {
+          // Not mine to complete — the marker's entry is what finishes the
+          // official round. Just save my stats and head back.
+          window.alert("Your stats are saved for this round — your marker will finish out the official score.")
+          setRound(null)
+          setForPlayer(null)
+        } else {
+          await apiCall(`/rounds/${round.id}/complete`, { method: 'POST' })
+          const finalSummary = await apiCall(`/rounds/${round.id}/summary`)
+          setSummary(finalSummary)
+          setSummaryIsTurn(false)
+        }
+      } else if (holesJustCompleted === 9 && holes.length > 9 && !isBeingMarkedByOther) {
         // Reached the turn on an 18-hole round
         const turnSummary = await apiCall(`/rounds/${round.id}/summary`)
         setSummary(turnSummary)
@@ -339,6 +360,10 @@ export default function ScoreEntry() {
     return <RoundSummary summary={summary} isTurn={summaryIsTurn} onContinue={dismissSummary} />
   }
 
+  if (showQualifierGroups) {
+    return <QualifierGroups onBack={() => setShowQualifierGroups(false)} />
+  }
+
   if (showCourseSetup) {
     return (
       <div>
@@ -361,6 +386,9 @@ export default function ScoreEntry() {
   // an in-progress round.
   if (round) {
     const hole = holes[holeIndex]
+    const isMarkingSomeoneElse = round.marked_by === player.id && round.player_id !== player.id
+    const isBeingMarkedByOther = round.player_id === player.id && round.marked_by && round.marked_by !== player.id
+    const canSubmit = isBeingMarkedByOther ? form.putts !== null : !!form.strokes
 
     if (!hole) {
       return (
@@ -379,13 +407,19 @@ export default function ScoreEntry() {
             <button style={styles.smallBtn} onClick={goToPreviousHole}>← Back</button>
           )}
           <button style={styles.smallBtn} onClick={saveAndExit}>Save &amp; Exit</button>
-          <button style={styles.smallBtnDanger} onClick={endRoundEarly}>End Round</button>
+          {!isBeingMarkedByOther && (
+            <button style={styles.smallBtnDanger} onClick={endRoundEarly}>End Round</button>
+          )}
         </div>
 
         <div style={styles.playerCourseHeader}>
           <div style={styles.playerNameHeader}>{activeTeamName || (forPlayer ? forPlayer.full_name : player.full_name)}</div>
           <div style={styles.courseNameHeader}>{courseName}</div>
         </div>
+
+        {isBeingMarkedByOther && (
+          <p style={styles.subtitleText}>Logging your own stats — a groupmate is keeping your official score.</p>
+        )}
 
         <div style={styles.holeHeader}>
           <div>
@@ -400,46 +434,60 @@ export default function ScoreEntry() {
           </div>
         </div>
 
-        <label style={styles.label}>Strokes</label>
-        <ButtonGroup
-          options={strokeOptions(hole.par)}
-          value={form.strokes}
-          onChange={(v) => setForm({ ...form, strokes: v })}
-          tierFn={(v) => scoreTier(v, hole.par)}
-        />
-
-        <label style={styles.label}>Putts</label>
-        <ButtonGroup
-          options={[
-            { value: 0, label: '0' },
-            { value: 1, label: '1' },
-            { value: 2, label: '2' },
-            { value: 3, label: '3' },
-            { value: 4, label: '4' },
-            { value: 5, label: '4+' },
-          ]}
-          value={form.putts}
-          onChange={(v) => setForm({ ...form, putts: v })}
-        />
-
-        {hole.par !== 3 && (
-          <ToggleRow
-            label="Fairway hit"
-            value={form.fairway_hit}
-            onChange={(v) => setForm({ ...form, fairway_hit: v })}
-          />
+        {!isBeingMarkedByOther && (
+          <>
+            <label style={styles.label}>Strokes</label>
+            <ButtonGroup
+              options={strokeOptions(hole.par)}
+              value={form.strokes}
+              onChange={(v) => setForm({ ...form, strokes: v })}
+              tierFn={(v) => scoreTier(v, hole.par)}
+            />
+          </>
         )}
 
-        <ToggleRow label="Green in regulation" value={form.gir} onChange={(v) => setForm({ ...form, gir: v })} />
+        {!isMarkingSomeoneElse && (
+          <>
+            <label style={styles.label}>Putts</label>
+            <ButtonGroup
+              options={[
+                { value: 0, label: '0' },
+                { value: 1, label: '1' },
+                { value: 2, label: '2' },
+                { value: 3, label: '3' },
+                { value: 4, label: '4' },
+                { value: 5, label: '4+' },
+              ]}
+              value={form.putts}
+              onChange={(v) => setForm({ ...form, putts: v })}
+            />
+
+            {hole.par !== 3 && (
+              <ToggleRow
+                label="Fairway hit"
+                value={form.fairway_hit}
+                onChange={(v) => setForm({ ...form, fairway_hit: v })}
+              />
+            )}
+
+            <ToggleRow label="Green in regulation" value={form.gir} onChange={(v) => setForm({ ...form, gir: v })} />
+          </>
+        )}
 
         {error && <p style={styles.error}>{error}</p>}
 
-        <button style={styles.button} onClick={submitHole} disabled={!form.strokes}>
-          {holeIndex + 1 < holes.length ? 'Next Hole' : 'Finish Round'}
+        <button style={styles.button} onClick={submitHole} disabled={!canSubmit}>
+          {holeIndex + 1 < holes.length ? 'Next Hole' : isBeingMarkedByOther ? 'Save Stats' : 'Finish Round'}
         </button>
       </div>
     )
   }
+
+  // Qualifier only: once a group's been fetched, make them choose between
+  // marking a groupmate's scorecard and entering their own round before
+  // showing the normal course picker.
+  const qualifierNeedsChoice =
+    roundType === 'qualifier' && !forPlayer && qualifierGroup && qualifierGroup.members.length > 0 && !qualifierOwnChosen
 
   // Not mid-round: show the nav tabs
   return (
@@ -447,7 +495,7 @@ export default function ScoreEntry() {
       <div style={styles.tabBar}>
         <button
           style={{ ...styles.tabBtn, ...(tab === 'play' ? styles.tabBtnActive : {}) }}
-          onClick={() => { setTab('play'); setRoundType(null); setSelectedEventId(''); setSelectedEventTeamId(''); setActiveTeamName(''); setTeamAssignmentError(null) }}
+          onClick={() => { setTab('play'); setRoundType(null); setSelectedEventId(''); setSelectedEventTeamId(''); setActiveTeamName(''); setTeamAssignmentError(null); setQualifierGroup(null); setQualifierOwnChosen(false) }}
         >
           Play
         </button>
@@ -557,7 +605,14 @@ export default function ScoreEntry() {
             <div style={styles.roundTypeName}>Individual Round</div>
             <div style={styles.roundTypeDesc}>Practice on your own — stats only, not scored toward standings</div>
           </button>
-          <button style={styles.roundTypeBtn} onClick={() => setRoundType('qualifier')}>
+          <button
+            style={styles.roundTypeBtn}
+            onClick={() => {
+              setRoundType('qualifier')
+              setQualifierOwnChosen(false)
+              apiCall('/qualifier/my-group').then(setQualifierGroup).catch(() => setQualifierGroup(null))
+            }}
+          >
             <div style={styles.roundTypeName}>Qualifier</div>
             <div style={styles.roundTypeDesc}>Playing for a tournament spot</div>
           </button>
@@ -575,6 +630,12 @@ export default function ScoreEntry() {
           {(player.role === 'coach' || player.role === 'captain') && (
             <button style={styles.linkBtn} onClick={() => setShowCourseSetup(true)}>
               + Add a new course
+            </button>
+          )}
+
+          {player.role === 'coach' && (
+            <button style={styles.linkBtn} onClick={() => setShowQualifierGroups(true)}>
+              ⛳ Manage Qualifier Groups
             </button>
           )}
 
@@ -688,12 +749,50 @@ export default function ScoreEntry() {
         </div>
       )}
 
-      {tab === 'play' && roundType && roundType !== 'tournament' && (
+      {tab === 'play' && qualifierNeedsChoice && (
         <div style={styles.page}>
-          <button style={styles.linkBtn} onClick={() => setRoundType(null)}>← Back</button>
+          <button
+            style={styles.linkBtn}
+            onClick={() => { setRoundType(null); setQualifierGroup(null); setQualifierOwnChosen(false) }}
+          >
+            ← Back
+          </button>
+          <h2>Your Qualifier Group</h2>
+          {qualifierGroup.tee_time && <p style={styles.subtitleText}>Tee time: {qualifierGroup.tee_time}</p>}
+          <p style={styles.subtitleText}>
+            Just like a real tournament, you don't keep your own score — pick a groupmate to mark
+            their scorecard (you enter their strokes; they log their own putts, fairways, and GIR),
+            or enter your own round if nobody's marking you.
+          </p>
+          <button style={styles.roundTypeBtn} onClick={() => setQualifierOwnChosen(true)}>
+            <div style={styles.roundTypeName}>Enter My Own Round</div>
+          </button>
+          {qualifierGroup.members.filter((m) => m.id !== player.id).map((m) => (
+            <button key={m.id} style={styles.roundTypeBtn} onClick={() => setForPlayer(m)}>
+              <div style={styles.roundTypeName}>Mark {m.full_name}'s Scorecard</div>
+            </button>
+          ))}
+        </div>
+      )}
+
+      {tab === 'play' && roundType && roundType !== 'tournament' && !qualifierNeedsChoice && (
+        <div style={styles.page}>
+          <button
+            style={styles.linkBtn}
+            onClick={() => { setRoundType(null); setQualifierGroup(null); setQualifierOwnChosen(false) }}
+          >
+            ← Back
+          </button>
           <h2>
             {roundType === 'team' ? 'Team Round' : roundType === 'individual' ? 'Individual Round' : 'Qualifier'}
           </h2>
+          {forPlayer && (
+            <p style={styles.subtitleText}>
+              {roundType === 'qualifier' && player.role !== 'coach'
+                ? <>Marking <strong>{forPlayer.full_name}</strong>'s scorecard</>
+                : <>Entering for <strong>{forPlayer.full_name}</strong></>}
+            </p>
+          )}
 
           {courses.length === 0 ? (
             <p>No courses yet. {player.role === 'coach' || player.role === 'captain' ? 'Add one from the previous screen.' : 'Ask your coach to add one.'}</p>
