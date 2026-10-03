@@ -23,9 +23,9 @@ export default defineConfig({
         background_color: '#004b87',
         theme_color: '#004b87',
         icons: [
-          // Drop real 192x192 and 512x512 png icons into /public and reference them here
-          // (ideally cropped from the Greyhounds logo once you have it — square,
-          // some padding around the mark tends to look best as a home screen icon)
+          // Generated from the real Assumption seal (frontend/public/branding/assumption-seal.png),
+          // padded onto the brand-blue background — see the image-processing step
+          // in git history if these ever need to be regenerated.
           { src: '/icon-192.png', sizes: '192x192', type: 'image/png' },
           { src: '/icon-512.png', sizes: '512x512', type: 'image/png' }
         ]

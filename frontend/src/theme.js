@@ -1,7 +1,8 @@
 // Assumption University / Greyhounds Athletics brand colors,
 // pulled from the official athletics brand guidelines (PMS 301 blue).
-// Swap LOGO_URL to a real hosted logo file once available — everything
-// referencing it (Header.jsx) will pick it up automatically.
+// Real logo + conference assets live in /public/branding (see LOGO_URL,
+// SEAL_URL, NE10_URL below) — swap the files there to update branding
+// anywhere in the app.
 
 export const colors = {
   primary: '#004b87',      // Assumption Blue (PMS 301)
@@ -12,6 +13,8 @@ export const colors = {
   white: '#ffffff',
   textMuted: '#5a6672',
   error: '#b00020',
+  gold: '#d4af37',         // accent for "LIVE"/highlight tags on dark banners
+  scoreUnder: '#c8102e',   // PGA-style red for under-par scores
 }
 
 export const fonts = {
@@ -19,6 +22,10 @@ export const fonts = {
   body: "system-ui, -apple-system, 'Segoe UI', sans-serif",
 }
 
-// Set this to a real hosted image URL once you have a logo file
-// (e.g. after uploading it to /public in the frontend and deploying).
-export const LOGO_URL = null
+// Real Assumption + NE10 assets (dropped into /public/branding).
+export const LOGO_URL = '/branding/assumption-wordmark.webp'
+export const SEAL_URL = '/branding/assumption-seal.png'
+export const NE10_URL = '/branding/ne10-logo.jpg'
+export const NE10_CHAMPIONSHIP_URL = '/branding/ne10-championship.jpg'
+export const HERO_TEE_URL = '/branding/hero-tee-shot.jpg'
+export const HERO_PUTTING_URL = '/branding/hero-putting-green.jpg'
