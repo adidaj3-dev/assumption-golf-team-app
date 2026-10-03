@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { supabase } from '../supabaseClient.js'
-import { colors } from '../theme.js'
+import { colors, GREYHOUNDS_SIGN_URL, subtleBackdrop } from '../theme.js'
 
 const API_BASE = import.meta.env.VITE_API_BASE
 
@@ -165,9 +165,9 @@ const styles = {
     padding: '1.5rem',
     maxWidth: 500,
     margin: '1.5rem auto',
-    background: 'white',
     borderRadius: '0.75rem',
     boxShadow: '0 2px 10px rgba(0,0,0,0.06)',
+    ...subtleBackdrop(GREYHOUNDS_SIGN_URL),
   },
   sectionTitle: { marginTop: '1.75rem', marginBottom: '0.25rem', color: colors.primary },
   objective: { color: colors.textMuted, marginTop: 0 },

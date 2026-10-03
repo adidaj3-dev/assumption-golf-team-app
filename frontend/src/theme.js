@@ -29,3 +29,15 @@ export const NE10_URL = '/branding/ne10-logo.jpg'
 export const NE10_CHAMPIONSHIP_URL = '/branding/ne10-championship.jpg'
 export const HERO_TEE_URL = '/branding/hero-tee-shot.jpg'
 export const HERO_PUTTING_URL = '/branding/hero-putting-green.jpg'
+export const GREYHOUNDS_SIGN_URL = '/branding/greyhounds-sign.jpg'
+
+// A very light wash over a background photo so it reads as a subtle texture
+// behind white content instead of competing with the text sitting on top.
+export function subtleBackdrop(url) {
+  return {
+    backgroundImage: `linear-gradient(rgba(255,255,255,0.94), rgba(255,255,255,0.94)), url(${url})`,
+    backgroundSize: 'cover',
+    backgroundPosition: 'center',
+    backgroundRepeat: 'no-repeat',
+  }
+}

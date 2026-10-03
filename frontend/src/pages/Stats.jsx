@@ -3,6 +3,7 @@ import { supabase } from '../supabaseClient.js'
 import Scorecard from './Scorecard.jsx'
 import TeamRoster from './TeamRoster.jsx'
 import CombinesDashboard from './CombinesDashboard.jsx'
+import { GREYHOUNDS_SIGN_URL, subtleBackdrop } from '../theme.js'
 
 const API_BASE = import.meta.env.VITE_API_BASE
 
@@ -186,9 +187,9 @@ const styles = {
     padding: '1.5rem',
     maxWidth: 480,
     margin: '1.5rem auto',
-    background: 'white',
     borderRadius: '0.75rem',
     boxShadow: '0 2px 10px rgba(0,0,0,0.06)',
+    ...subtleBackdrop(GREYHOUNDS_SIGN_URL),
   },
   subtitle: { color: '#666', marginTop: '-0.5rem' },
   grid: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem', marginTop: '1.5rem' },
