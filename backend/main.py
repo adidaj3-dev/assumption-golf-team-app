@@ -1290,7 +1290,11 @@ def _standings_avg(player_id: str, round_type: str = "team") -> Optional[float]:
     given type, counting only ones actually played to a full 9 or 18 holes.
     Returns None if they have no qualifying rounds yet. Used for the Lineup
     (round_type='team'), Individual Standings (round_type='individual'),
-    and Qualifier Leaderboard (round_type='qualifier')."""
+    and Qualifier Leaderboard (round_type='qualifier').
+
+    Kept for anywhere a single player's average is needed on its own;
+    standings/round-leaderboard use the batched _compute_standings_avgs
+    below instead, since looping this per roster player is the slow way."""
     rounds = (
         supabase.table("rounds")
         .select("id, course_id, completed_at")
@@ -1321,6 +1325,64 @@ def _standings_avg(player_id: str, round_type: str = "team") -> Optional[float]:
     return round(sum(scores_to_par) / len(scores_to_par), 2)
 
 
+def _compute_standings_avgs(player_ids: list[str], round_type: str = "team") -> dict:
+    """Same result as calling _standings_avg() once per player, but batched
+    into 3 queries total instead of 1 + 2-per-round for every roster
+    player — this is what the Standings page loads for an entire team at
+    once, so the old per-player loop was a lot of sequential round-trips."""
+    if not player_ids:
+        return {}
+
+    rounds = (
+        supabase.table("rounds")
+        .select("id, player_id, course_id")
+        .in_("player_id", player_ids)
+        .eq("round_type", round_type)
+        .not_.is_("completed_at", "null")
+        .execute()
+        .data
+    )
+    if not rounds:
+        return {pid: None for pid in player_ids}
+
+    round_ids = [r["id"] for r in rounds]
+    course_ids = list({r["course_id"] for r in rounds if r["course_id"]})
+
+    all_scores = (
+        supabase.table("hole_scores")
+        .select("round_id, strokes, holes(par)")
+        .in_("round_id", round_ids)
+        .execute()
+        .data
+    )
+    scores_by_round = {}
+    for s in all_scores:
+        scores_by_round.setdefault(s["round_id"], []).append(s)
+
+    all_holes = (
+        supabase.table("holes").select("course_id").in_("course_id", course_ids).execute().data
+        if course_ids else []
+    )
+    hole_count_by_course = {}
+    for h in all_holes:
+        hole_count_by_course[h["course_id"]] = hole_count_by_course.get(h["course_id"], 0) + 1
+
+    scores_to_par_by_player = {}
+    for r in rounds:
+        scores = scores_by_round.get(r["id"], [])
+        course_total_holes = hole_count_by_course.get(r["course_id"], 0)
+        if len(scores) in (9, 18) and len(scores) == course_total_holes:
+            total_strokes = sum(s["strokes"] for s in scores)
+            total_par = sum(s["holes"]["par"] for s in scores)
+            scores_to_par_by_player.setdefault(r["player_id"], []).append(total_strokes - total_par)
+
+    results = {}
+    for pid in player_ids:
+        vals = scores_to_par_by_player.get(pid)
+        results[pid] = round(sum(vals) / len(vals), 2) if vals else None
+    return results
+
+
 def _standings_tier(team: str, rank: int) -> str:
     if team == "women":
         return "In" if rank <= 5 else "Individual"
@@ -1347,9 +1409,9 @@ def standings(team: str, player=Depends(get_current_player)):
     )
 
     entries = []
+    avgs = _compute_standings_avgs([p["id"] for p in roster])
     for p in roster:
-        avg = _standings_avg(p["id"])
-        entries.append({"player_id": p["id"], "full_name": p["full_name"], "scoring_avg_to_par": avg})
+        entries.append({"player_id": p["id"], "full_name": p["full_name"], "scoring_avg_to_par": avgs[p["id"]]})
 
     entries.sort(key=lambda e: (e["scoring_avg_to_par"] is None, e["scoring_avg_to_par"]))
 
@@ -1381,9 +1443,9 @@ def round_leaderboard(team: str, round_type: str, player=Depends(get_current_pla
     )
 
     entries = []
+    avgs = _compute_standings_avgs([p["id"] for p in roster], round_type)
     for p in roster:
-        avg = _standings_avg(p["id"], round_type)
-        entries.append({"player_id": p["id"], "full_name": p["full_name"], "scoring_avg_to_par": avg})
+        entries.append({"player_id": p["id"], "full_name": p["full_name"], "scoring_avg_to_par": avgs[p["id"]]})
 
     entries.sort(key=lambda e: (e["scoring_avg_to_par"] is None, e["scoring_avg_to_par"]))
 
@@ -1425,6 +1487,36 @@ def _combine_standings_score(player_id: str) -> Optional[float]:
     return round(sum(percentages) / len(percentages), 1)
 
 
+def _compute_combine_standings_scores(player_ids: list[str]) -> dict:
+    """Batched version of calling _combine_standings_score() once per
+    player — 1 query total instead of 1 per roster player."""
+    if not player_ids:
+        return {}
+
+    sessions = (
+        supabase.table("combine_sessions")
+        .select("player_id, combine_type, total_points")
+        .in_("player_id", player_ids)
+        .execute()
+        .data
+    )
+
+    percentages_by_player = {}
+    for s in sessions:
+        definition = COMBINE_DEFINITIONS.get(s["combine_type"])
+        if not definition:
+            continue
+        percentages_by_player.setdefault(s["player_id"], []).append(
+            100 * s["total_points"] / definition["max_points"]
+        )
+
+    results = {}
+    for pid in player_ids:
+        vals = percentages_by_player.get(pid)
+        results[pid] = round(sum(vals) / len(vals), 1) if vals else None
+    return results
+
+
 @app.get("/combine-standings")
 def combine_standings(team: str, player=Depends(get_current_player)):
     if team not in ("men", "women"):
@@ -1440,9 +1532,9 @@ def combine_standings(team: str, player=Depends(get_current_player)):
     )
 
     entries = []
+    scores = _compute_combine_standings_scores([p["id"] for p in roster])
     for p in roster:
-        score = _combine_standings_score(p["id"])
-        entries.append({"player_id": p["id"], "full_name": p["full_name"], "combine_score_pct": score})
+        entries.append({"player_id": p["id"], "full_name": p["full_name"], "combine_score_pct": scores[p["id"]]})
 
     # Higher percentage is better, so sort descending (None goes last).
     entries.sort(key=lambda e: (e["combine_score_pct"] is None, -(e["combine_score_pct"] or 0)))

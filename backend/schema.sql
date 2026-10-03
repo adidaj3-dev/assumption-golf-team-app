@@ -230,9 +230,10 @@ create policy "anyone signed in reads wolf_hole_decisions" on wolf_hole_decision
 
 -- Admin convenience view — Browse this in Supabase's Table Editor instead
 -- of the raw `rounds` table, so you see player names and readable status
--- instead of UUIDs. Read-only (it's a view, not a table); edit the
--- underlying `rounds`/`hole_scores` tables directly if you ever need to,
--- or use the app's own coach-side round editor for routine fixes.
+-- instead of UUIDs. Deleting a row here (Table Editor supports deleting
+-- from this view) cascades to remove that round's hole_scores too, via
+-- the INSTEAD OF DELETE trigger below — this is the quickest way to clear
+-- out a dormant/mistaken round straight from Supabase.
 create or replace view rounds_admin_view as
 select
     p.full_name as player_name,
@@ -254,3 +255,22 @@ from rounds r
 join players p on p.id = r.player_id
 left join courses c on c.id = r.course_id
 order by r.started_at desc;
+
+-- Makes rounds_admin_view deletable from Supabase's Table Editor: a plain
+-- view can't be deleted from directly (it joins 3 tables), so this trigger
+-- intercepts a DELETE on the view and removes the round's hole_scores
+-- first, then the round itself.
+create or replace function delete_round_via_admin_view()
+returns trigger as $$
+begin
+    delete from hole_scores where round_id = old.round_id;
+    delete from rounds where id = old.round_id;
+    return old;
+end;
+$$ language plpgsql;
+
+drop trigger if exists rounds_admin_view_delete on rounds_admin_view;
+create trigger rounds_admin_view_delete
+    instead of delete on rounds_admin_view
+    for each row
+    execute function delete_round_via_admin_view();
