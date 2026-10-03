@@ -64,12 +64,14 @@ export default function TeamRoster({ onBack, player }) {
 
   if (view === 'rounds') {
     const isTeam = (r) => r.round_type === 'team'
-    const groups = [
-      { key: 'completeTeam', title: 'Complete Team Rounds', rounds: rounds.filter((r) => isTeam(r) && r.completed) },
-      { key: 'completeIndividual', title: 'Complete Individual Rounds', rounds: rounds.filter((r) => !isTeam(r) && r.completed) },
-      { key: 'incompleteTeam', title: 'Incomplete Team Rounds', rounds: rounds.filter((r) => isTeam(r) && !r.completed) },
-      { key: 'incompleteIndividual', title: 'Incomplete Individual Rounds', rounds: rounds.filter((r) => !isTeam(r) && !r.completed) },
-    ]
+    const groups = rounds
+      ? [
+          { key: 'completeTeam', title: 'Complete Team Rounds', rounds: rounds.filter((r) => isTeam(r) && r.completed) },
+          { key: 'completeIndividual', title: 'Complete Individual Rounds', rounds: rounds.filter((r) => !isTeam(r) && r.completed) },
+          { key: 'incompleteTeam', title: 'Incomplete Team Rounds', rounds: rounds.filter((r) => isTeam(r) && !r.completed) },
+          { key: 'incompleteIndividual', title: 'Incomplete Individual Rounds', rounds: rounds.filter((r) => !isTeam(r) && !r.completed) },
+        ]
+      : []
 
     return (
       <div style={styles.page}>
