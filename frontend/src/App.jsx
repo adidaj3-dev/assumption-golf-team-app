@@ -9,13 +9,14 @@ export default function App() {
   return (
     <div style={{ fontFamily: fonts.body, minHeight: '100vh', position: 'relative' }}>
       {/* Fixed-position (not background-attachment: fixed — unreliable on iOS
-          Safari) backdrop: solid navy, with two landscape-cropped photos
-          floating in full color — one upper-left, one lower-right — rather
-          than filling the whole screen, so they read as accents in the
-          dead space around each page's centered white card. */}
+          Safari) backdrop: solid navy, with two larger landscape-cropped
+          photos staggered (one upper-left, one lower-right) and only a
+          light navy tint over each so they stay readable as photos instead
+          of washing out, filling most of the dead space around each
+          page's centered white card. */}
       <div style={styles.backdrop}>
-        <div style={{ ...styles.backdropPhoto, ...styles.backdropPhotoLeft, backgroundImage: `url(${HERO_TEE_URL})` }} />
-        <div style={{ ...styles.backdropPhoto, ...styles.backdropPhotoRight, backgroundImage: `url(${HERO_PUTTING_URL})` }} />
+        <div style={{ ...styles.backdropPhoto, ...styles.backdropPhotoLeft, backgroundImage: `linear-gradient(rgba(0,50,92,0.22), rgba(0,50,92,0.22)), url(${HERO_TEE_URL})` }} />
+        <div style={{ ...styles.backdropPhoto, ...styles.backdropPhotoRight, backgroundImage: `linear-gradient(rgba(0,50,92,0.22), rgba(0,50,92,0.22)), url(${HERO_PUTTING_URL})` }} />
       </div>
 
       <div style={{ position: 'relative' }}>
@@ -42,27 +43,29 @@ const styles = {
     background: colors.primaryDark,
     overflow: 'hidden',
   },
-  // Fixed landscape aspect ratio regardless of the source photo's own
-  // orientation — object-fit crops each one to come out horizontal, never
-  // sideways. Full color, no wash, so they stay vivid against the navy.
+  // Fixed landscape aspect ratio — the source photos are portrait (shot
+  // vertically), so cropping to a wide box via background-size: cover is
+  // what keeps them horizontal, not sideways. A faint navy tint (via the
+  // gradient layered into backgroundImage below) keeps them cohesive with
+  // the navy page without washing out the color.
   backdropPhoto: {
     position: 'absolute',
-    width: '46vw',
-    maxWidth: 340,
-    aspectRatio: '16 / 10',
+    width: '72vw',
+    maxWidth: 480,
+    aspectRatio: '16 / 11',
     backgroundSize: 'cover',
     backgroundPosition: 'center',
     backgroundRepeat: 'no-repeat',
     borderRadius: '0.75rem',
-    boxShadow: '0 8px 24px rgba(0,0,0,0.35)',
+    boxShadow: '0 8px 28px rgba(0,0,0,0.4)',
   },
   // Staggered: one sits higher on the left, the other lower on the right.
   backdropPhotoLeft: {
-    left: '3vw',
-    top: '6vh',
+    left: '-4vw',
+    top: '2vh',
   },
   backdropPhotoRight: {
-    right: '3vw',
-    top: '62vh',
+    right: '-4vw',
+    top: '58vh',
   },
 }
