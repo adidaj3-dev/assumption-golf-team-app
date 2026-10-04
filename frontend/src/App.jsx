@@ -9,13 +9,13 @@ export default function App() {
   return (
     <div style={{ fontFamily: fonts.body, minHeight: '100vh', position: 'relative' }}>
       {/* Fixed-position (not background-attachment: fixed — unreliable on iOS
-          Safari) photo backdrop filling the dead space around every page's
-          centered white card. Two hero shots, split left/right, under a
-          navy wash so nothing on top of it loses contrast. */}
+          Safari) backdrop: solid navy, with two landscape-cropped photos
+          floating in full color — one upper-left, one lower-right — rather
+          than filling the whole screen, so they read as accents in the
+          dead space around each page's centered white card. */}
       <div style={styles.backdrop}>
-        <div style={{ ...styles.backdropHalf, backgroundImage: `url(${HERO_TEE_URL})` }} />
-        <div style={{ ...styles.backdropHalf, backgroundImage: `url(${HERO_PUTTING_URL})` }} />
-        <div style={styles.backdropWash} />
+        <div style={{ ...styles.backdropPhoto, ...styles.backdropPhotoLeft, backgroundImage: `url(${HERO_TEE_URL})` }} />
+        <div style={{ ...styles.backdropPhoto, ...styles.backdropPhotoRight, backgroundImage: `url(${HERO_PUTTING_URL})` }} />
       </div>
 
       <div style={{ position: 'relative' }}>
@@ -39,18 +39,30 @@ const styles = {
     position: 'fixed',
     inset: 0,
     zIndex: -1,
-    display: 'flex',
     background: colors.primaryDark,
+    overflow: 'hidden',
   },
-  backdropHalf: {
-    flex: 1,
+  // Fixed landscape aspect ratio regardless of the source photo's own
+  // orientation — object-fit crops each one to come out horizontal, never
+  // sideways. Full color, no wash, so they stay vivid against the navy.
+  backdropPhoto: {
+    position: 'absolute',
+    width: '46vw',
+    maxWidth: 340,
+    aspectRatio: '16 / 10',
     backgroundSize: 'cover',
     backgroundPosition: 'center',
     backgroundRepeat: 'no-repeat',
+    borderRadius: '0.75rem',
+    boxShadow: '0 8px 24px rgba(0,0,0,0.35)',
   },
-  backdropWash: {
-    position: 'absolute',
-    inset: 0,
-    background: `linear-gradient(180deg, rgba(0,50,92,0.88), rgba(0,50,92,0.93))`,
+  // Staggered: one sits higher on the left, the other lower on the right.
+  backdropPhotoLeft: {
+    left: '3vw',
+    top: '6vh',
+  },
+  backdropPhotoRight: {
+    right: '3vw',
+    top: '62vh',
   },
 }
