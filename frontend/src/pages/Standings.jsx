@@ -1,21 +1,15 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { supabase } from '../supabaseClient.js'
+import Lineup from './Lineup.jsx'
 import { colors, GREYHOUNDS_SIGN_URL, subtleBackdrop } from '../theme.js'
 
 const API_BASE = import.meta.env.VITE_API_BASE
 
 const SECTIONS = [
   {
-    key: 'lineup',
-    title: 'Lineup',
-    subtitle: 'Ranked by season scoring average — completed 9/18-hole Team Rounds only.',
-    endpoint: '/standings',
-    hasTiers: true,
-  },
-  {
     key: 'individual',
     title: 'Individual Standings',
-    subtitle: 'Ranked by season scoring average — completed 9/18-hole Individual Rounds only.',
+    subtitle: 'Season scoring average across EVERY completed round, any type — the all-in combined average.',
     endpoint: '/round-leaderboard',
     roundType: 'individual',
     hasTiers: false,
@@ -23,7 +17,7 @@ const SECTIONS = [
   {
     key: 'qualifier',
     title: 'Qualifier Leaderboard',
-    subtitle: 'Ranked by season scoring average — completed 9/18-hole Qualifier Rounds only.',
+    subtitle: 'Season scoring average from Qualifier rounds, plus any round the coach has flagged to count.',
     endpoint: '/round-leaderboard',
     roundType: 'qualifier',
     hasTiers: false,
@@ -37,11 +31,27 @@ const SECTIONS = [
   },
 ]
 
-export default function Standings() {
-  const [activeSection, setActiveSection] = useState(null) // a SECTIONS entry, or null
+async function authedFetch(path) {
+  const { data: sessionData } = await supabase.auth.getSession()
+  const token = sessionData.session?.access_token
+  const res = await fetch(`${API_BASE}${path}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  if (!res.ok) throw new Error(await res.text())
+  return res.json()
+}
+
+export default function Standings({ player }) {
+  const [activeSection, setActiveSection] = useState(null) // a SECTIONS entry, 'lineup', or null
   const [team, setTeam] = useState(null) // 'men' or 'women'
   const [entries, setEntries] = useState(null)
+  const [lineups, setLineups] = useState(null)
+  const [showManageLineup, setShowManageLineup] = useState(false)
   const [error, setError] = useState(null)
+
+  if (showManageLineup) {
+    return <Lineup onBack={() => setShowManageLineup(false)} />
+  }
 
   async function openTeam(section, t) {
     setActiveSection(section)
@@ -49,14 +59,20 @@ export default function Standings() {
     setEntries(null)
     setError(null)
     try {
-      const { data: sessionData } = await supabase.auth.getSession()
-      const token = sessionData.session?.access_token
       const qs = section.roundType ? `?team=${t}&round_type=${section.roundType}` : `?team=${t}`
-      const res = await fetch(`${API_BASE}${section.endpoint}${qs}`, {
-        headers: { Authorization: `Bearer ${token}` },
-      })
-      if (!res.ok) throw new Error(await res.text())
-      setEntries(await res.json())
+      setEntries(await authedFetch(`${section.endpoint}${qs}`))
+    } catch (err) {
+      setError(err.message)
+    }
+  }
+
+  async function openLineup(t) {
+    setActiveSection('lineup')
+    setTeam(t)
+    setLineups(null)
+    setError(null)
+    try {
+      setLineups(await authedFetch(`/lineups?team=${t}`))
     } catch (err) {
       setError(err.message)
     }
@@ -66,6 +82,7 @@ export default function Standings() {
     setActiveSection(null)
     setTeam(null)
     setEntries(null)
+    setLineups(null)
     setError(null)
   }
 
@@ -73,17 +90,26 @@ export default function Standings() {
     return (
       <div style={styles.page}>
         <h2>Standings</h2>
+
+        <h3 style={styles.sectionTitle}>Lineup</h3>
+        <p style={styles.objective}>The coach's current starting lineup and individuals, by tournament.</p>
+        <div style={styles.teamButtons}>
+          <button style={styles.teamBtn} onClick={() => openLineup('men')}>Men's Lineup</button>
+          <button style={styles.teamBtn} onClick={() => openLineup('women')}>Women's Lineup</button>
+        </div>
+        {player?.role === 'coach' && (
+          <button style={styles.linkBtn} onClick={() => setShowManageLineup(true)}>
+            📋 Manage Lineup
+          </button>
+        )}
+
         {SECTIONS.map((s) => (
           <div key={s.key}>
             <h3 style={styles.sectionTitle}>{s.title}</h3>
             <p style={styles.objective}>{s.subtitle}</p>
             <div style={styles.teamButtons}>
-              <button style={styles.teamBtn} onClick={() => openTeam(s, 'men')}>
-                {s.key === 'lineup' ? "Men's Lineup" : "Men's Team"}
-              </button>
-              <button style={styles.teamBtn} onClick={() => openTeam(s, 'women')}>
-                {s.key === 'lineup' ? "Women's Lineup" : "Women's Team"}
-              </button>
+              <button style={styles.teamBtn} onClick={() => openTeam(s, 'men')}>Men's Team</button>
+              <button style={styles.teamBtn} onClick={() => openTeam(s, 'women')}>Women's Team</button>
             </div>
           </div>
         ))}
@@ -91,13 +117,35 @@ export default function Standings() {
     )
   }
 
-  const isCombine = activeSection.key === 'combine'
+  if (activeSection === 'lineup') {
+    return (
+      <div style={styles.page}>
+        <button style={styles.linkBtn} onClick={goHome}>← Back</button>
+        <h2>{team === 'men' ? "Men's" : "Women's"} Lineup</h2>
+
+        {error && <p style={styles.error}>{error}</p>}
+        {!lineups && !error && <p>Loading…</p>}
+        {lineups && lineups.length === 0 && <p style={styles.muted}>No lineup set yet for this team.</p>}
+
+        {lineups && lineups.length > 0 && (
+          <LineupPreview lineupId={lineups[0].id} />
+        )}
+
+        {lineups && lineups.length > 1 && (
+          <p style={styles.muted}>{lineups.length - 1} earlier tournament lineup{lineups.length - 1 === 1 ? '' : 's'} on file.</p>
+        )}
+      </div>
+    )
+  }
+
+  const activeSectionDef = SECTIONS.find((s) => s.key === activeSection)
+  const isCombine = activeSectionDef.key === 'combine'
 
   return (
     <div style={styles.page}>
       <button style={styles.linkBtn} onClick={goHome}>← Back</button>
       <h2>
-        {team === 'men' ? "Men's" : "Women's"} {activeSection.title}
+        {team === 'men' ? "Men's" : "Women's"} {activeSectionDef.title}
       </h2>
 
       {error && <p style={styles.error}>{error}</p>}
@@ -108,19 +156,9 @@ export default function Standings() {
       )}
 
       {entries && entries.map((e) => {
-        const showCutLine =
-          activeSection.hasTiers && (
-            (team === 'men' && (e.rank === 6 || e.rank === 10)) ||
-            (team === 'women' && e.rank === 6)
-          )
         const value = isCombine ? e.combine_score_pct : e.scoring_avg_to_par
         return (
           <div key={e.player_id}>
-            {showCutLine && (
-              <div style={styles.cutLine}>
-                <span>{team === 'men' && e.rank === 6 ? 'STARTING LINEUP CUT' : team === 'men' ? 'QUALIFIER CUT' : 'CUT LINE'}</span>
-              </div>
-            )}
             <div style={{ ...styles.row, ...tierRowStyle(e.tier) }}>
               <div style={styles.rankCol}>
                 <div style={{ ...styles.rankBadge, ...tierBadgeStyle(e.tier) }}>{e.rank}</div>
@@ -136,6 +174,41 @@ export default function Standings() {
           </div>
         )
       })}
+    </div>
+  )
+}
+
+function LineupPreview({ lineupId }) {
+  const [detail, setDetail] = useState(null)
+  const [error, setError] = useState(null)
+
+  useEffect(() => {
+    setDetail(null)
+    setError(null)
+    authedFetch(`/lineups/${lineupId}`).then(setDetail).catch((err) => setError(err.message))
+  }, [lineupId])
+
+  if (error) return <p style={styles.error}>{error}</p>
+  if (!detail) return <p>Loading…</p>
+
+  return (
+    <div>
+      <h3 style={styles.sectionTitle}>{detail.name}</h3>
+      {detail.course_name && (
+        <p style={styles.objective}>{detail.course_name}{detail.course_par ? ` · Par ${detail.course_par}` : ''}</p>
+      )}
+      {detail.entries.map((e) => (
+        <div key={e.id} style={{ ...styles.row, ...tierRowStyle(e.category === 'Starting Lineup' || e.category === 'A Team' ? 'Starting Lineup' : null) }}>
+          <div style={styles.rankCol}>
+            <div style={{ ...styles.rankBadge, ...tierBadgeStyle(e.category === 'Starting Lineup' || e.category === 'A Team' ? 'Starting Lineup' : null) }}>{e.slot}</div>
+          </div>
+          <div style={styles.nameCol}>
+            <div style={styles.name}>{e.full_name}</div>
+            <div style={styles.tierLabel}>{e.category}</div>
+          </div>
+          <div style={styles.avgCol}>{formatToPar(e.tournament_avg_to_par)}</div>
+        </div>
+      ))}
     </div>
   )
 }

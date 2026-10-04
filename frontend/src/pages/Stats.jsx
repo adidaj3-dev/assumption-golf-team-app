@@ -7,14 +7,16 @@ import { GREYHOUNDS_SIGN_URL, subtleBackdrop } from '../theme.js'
 
 const API_BASE = import.meta.env.VITE_API_BASE
 
-async function authedFetch(path) {
+async function authedFetch(path, options = {}) {
   const { data: sessionData } = await supabase.auth.getSession()
   const token = sessionData.session?.access_token
   const res = await fetch(`${API_BASE}${path}`, {
-    headers: { Authorization: `Bearer ${token}` },
+    ...options,
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}`, ...options.headers },
   })
   if (!res.ok) throw new Error(await res.text())
-  return res.json()
+  const text = await res.text()
+  return text ? JSON.parse(text) : null
 }
 
 export default function Stats({ player }) {
@@ -62,6 +64,18 @@ export default function Stats({ player }) {
     setView('scorecard')
   }
 
+  async function toggleQualifying(round, fromView) {
+    try {
+      await authedFetch(`/rounds/${round.id}/qualifying`, {
+        method: 'PATCH',
+        body: JSON.stringify({ is_qualifying: !round.is_qualifying }),
+      })
+      setRounds(await authedFetch(`/players/${player.id}/rounds`))
+    } catch (err) {
+      setError(err.message)
+    }
+  }
+
   if (ROUND_LISTS[view]) {
     const { title, subtitle, rounds: list } = ROUND_LISTS[view]
     return (
@@ -73,22 +87,27 @@ export default function Stats({ player }) {
           <p style={styles.muted}>No rounds here yet.</p>
         ) : (
           list.map((r) => (
-            <button
-              key={r.id}
-              style={styles.roundRow}
-              onClick={() => openScorecard(r.id, view)}
-            >
-              <div>
-                <div style={styles.roundCourse}>
-                  {r.course_name} {r.round_type === 'qualifier' && <span style={styles.badge}>Qualifier</span>}
-                  {r.round_type === 'tournament' && <span style={styles.badge}>Tournament</span>}
+            <div key={r.id} style={styles.roundRow}>
+              <button style={styles.roundRowClickable} onClick={() => r.is_summary ? null : openScorecard(r.id, view)} disabled={r.is_summary}>
+                <div>
+                  <div style={styles.roundCourse}>
+                    {r.course_name} {r.round_type === 'qualifier' && <span style={styles.badge}>Qualifier</span>}
+                    {r.round_type === 'tournament' && <span style={styles.badge}>Tournament</span>}
+                    {r.is_qualifying && r.round_type !== 'qualifier' && <span style={styles.badgeAlt}>Counts as Qualifier</span>}
+                  </div>
+                  <div style={styles.roundDate}>
+                    {new Date(r.started_at).toLocaleDateString()} ·{' '}
+                    {r.is_summary ? 'quick entry' : `${r.holes_played} holes`} {r.completed ? '' : '(in progress)'}
+                  </div>
                 </div>
-                <div style={styles.roundDate}>
-                  {new Date(r.started_at).toLocaleDateString()} · {r.holes_played} holes {r.completed ? '' : '(in progress)'}
-                </div>
-              </div>
-              <div style={styles.roundScore}>{formatToPar(r.score_to_par)}</div>
-            </button>
+                <div style={styles.roundScore}>{formatToPar(r.score_to_par)}</div>
+              </button>
+              {player.role === 'coach' && r.round_type !== 'qualifier' && (
+                <button style={styles.qualifyToggle} onClick={() => toggleQualifying(r)}>
+                  {r.is_qualifying ? 'Unmark Qualifier' : 'Mark as Qualifier'}
+                </button>
+              )}
+            </div>
           ))
         )}
       </div>
@@ -107,7 +126,9 @@ export default function Stats({ player }) {
           <p style={styles.subtitle}>Based on {stats.rounds_played} completed round{stats.rounds_played === 1 ? '' : 's'}</p>
 
           <div style={styles.grid}>
-            <StatCard label="Scoring Avg" value={formatToPar(stats.scoring_avg_to_par)} />
+            <StatCard label="Scoring Avg (all rounds)" value={formatToPar(stats.scoring_avg_to_par)} />
+            <StatCard label="Qualifying Avg" value={formatToPar(stats.qualifying_avg_to_par)} />
+            <StatCard label="Tournament Avg" value={formatToPar(stats.tournament_avg_to_par)} />
             <StatCard label="GIR %" value={stats.gir_pct != null ? `${stats.gir_pct}%` : '—'} />
             <StatCard label="Fairways %" value={stats.fairway_pct != null ? `${stats.fairway_pct}%` : '—'} />
             <StatCard label="Putts / Round (avg)" value={stats.putts_per_round} />
@@ -214,16 +235,20 @@ const styles = {
   navBtnTitle: { fontWeight: 600, color: 'white' },
   navBtnSub: { fontSize: '0.8rem', color: '#cfe0ef', marginTop: '0.15rem' },
   roundRow: {
+    background: '#eef1f5',
+    borderRadius: '0.6rem',
+    padding: '0.25rem',
+    marginBottom: '0.6rem',
+  },
+  roundRowClickable: {
     display: 'flex',
     justifyContent: 'space-between',
     alignItems: 'center',
     width: '100%',
     textAlign: 'left',
-    background: '#eef1f5',
+    background: 'none',
     border: 'none',
-    borderRadius: '0.6rem',
-    padding: '1rem',
-    marginBottom: '0.6rem',
+    padding: '0.75rem',
     cursor: 'pointer',
   },
   roundCourse: { fontWeight: 600 },
@@ -236,6 +261,24 @@ const styles = {
     borderRadius: '1rem',
     padding: '0.1rem 0.5rem',
     marginLeft: '0.4rem',
+  },
+  badgeAlt: {
+    fontSize: '0.7rem',
+    background: '#d4af37',
+    color: 'white',
+    borderRadius: '1rem',
+    padding: '0.1rem 0.5rem',
+    marginLeft: '0.4rem',
+  },
+  qualifyToggle: {
+    width: '100%',
+    padding: '0.4rem',
+    fontSize: '0.75rem',
+    border: 'none',
+    borderTop: '1px solid #dde3e9',
+    background: 'none',
+    color: '#004b87',
+    cursor: 'pointer',
   },
   linkBtn: {
     display: 'block',

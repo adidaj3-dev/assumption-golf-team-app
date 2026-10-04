@@ -5,14 +5,16 @@ import { colors } from '../theme.js'
 
 const API_BASE = import.meta.env.VITE_API_BASE
 
-async function authedFetch(path) {
+async function authedFetch(path, options = {}) {
   const { data: sessionData } = await supabase.auth.getSession()
   const token = sessionData.session?.access_token
   const res = await fetch(`${API_BASE}${path}`, {
-    headers: { Authorization: `Bearer ${token}` },
+    ...options,
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}`, ...options.headers },
   })
   if (!res.ok) throw new Error(await res.text())
-  return res.json()
+  const text = await res.text()
+  return text ? JSON.parse(text) : null
 }
 
 export default function TeamRoster({ onBack, player }) {
@@ -40,6 +42,18 @@ export default function TeamRoster({ onBack, player }) {
     setView('rounds')
     setRounds(null)
     authedFetch(`/players/${selectedPlayer.id}/rounds`).then(setRounds).catch((err) => setError(err.message))
+  }
+
+  async function toggleQualifying(round) {
+    try {
+      await authedFetch(`/rounds/${round.id}/qualifying`, {
+        method: 'PATCH',
+        body: JSON.stringify({ is_qualifying: !round.is_qualifying }),
+      })
+      setRounds(await authedFetch(`/players/${selectedPlayer.id}/rounds`))
+    } catch (err) {
+      setError(err.message)
+    }
   }
 
   if (error) {
@@ -90,15 +104,30 @@ export default function TeamRoster({ onBack, player }) {
                 <p style={styles.muted}>None yet.</p>
               ) : (
                 g.rounds.map((r) => (
-                  <button key={r.id} style={styles.roundRow} onClick={() => { setSelectedRoundId(r.id); setView('scorecard') }}>
-                    <div>
-                      <div style={styles.roundCourse}>{r.course_name}</div>
-                      <div style={styles.roundDate}>
-                        {new Date(r.started_at).toLocaleDateString()} · {r.holes_played} holes {r.completed ? '' : '(in progress)'}
+                  <div key={r.id} style={styles.roundRowWrap}>
+                    <button
+                      style={styles.roundRow}
+                      onClick={() => { if (!r.is_summary) { setSelectedRoundId(r.id); setView('scorecard') } }}
+                      disabled={r.is_summary}
+                    >
+                      <div>
+                        <div style={styles.roundCourse}>
+                          {r.course_name}
+                          {r.is_qualifying && r.round_type !== 'qualifier' && <span style={styles.badgeAlt}>Counts as Qualifier</span>}
+                        </div>
+                        <div style={styles.roundDate}>
+                          {new Date(r.started_at).toLocaleDateString()} ·{' '}
+                          {r.is_summary ? 'quick entry' : `${r.holes_played} holes`} {r.completed ? '' : '(in progress)'}
+                        </div>
                       </div>
-                    </div>
-                    <div style={styles.roundScore}>{formatToPar(r.score_to_par)}</div>
-                  </button>
+                      <div style={styles.roundScore}>{formatToPar(r.score_to_par)}</div>
+                    </button>
+                    {isCoach && r.round_type !== 'qualifier' && (
+                      <button style={styles.qualifyToggle} onClick={() => toggleQualifying(r)}>
+                        {r.is_qualifying ? 'Unmark Qualifier' : 'Mark as Qualifier'}
+                      </button>
+                    )}
+                  </div>
                 ))
               )}
             </div>
@@ -155,22 +184,43 @@ const styles = {
     fontWeight: 600,
     color: colors.primary,
   },
+  roundRowWrap: {
+    background: colors.grayLight,
+    borderRadius: '0.6rem',
+    marginBottom: '0.6rem',
+  },
   roundRow: {
     display: 'flex',
     justifyContent: 'space-between',
     alignItems: 'center',
     width: '100%',
     textAlign: 'left',
-    background: colors.grayLight,
+    background: 'none',
     border: 'none',
-    borderRadius: '0.6rem',
     padding: '1rem',
-    marginBottom: '0.6rem',
     cursor: 'pointer',
   },
   roundCourse: { fontWeight: 600 },
   roundDate: { fontSize: '0.8rem', color: '#666', marginTop: '0.15rem' },
   roundScore: { fontSize: '1.3rem', fontWeight: 'bold', color: colors.primary },
+  badgeAlt: {
+    fontSize: '0.7rem',
+    background: colors.gold,
+    color: 'white',
+    borderRadius: '1rem',
+    padding: '0.1rem 0.5rem',
+    marginLeft: '0.4rem',
+  },
+  qualifyToggle: {
+    width: '100%',
+    padding: '0.4rem',
+    fontSize: '0.75rem',
+    border: 'none',
+    borderTop: '1px solid #dde3e9',
+    background: 'none',
+    color: colors.primary,
+    cursor: 'pointer',
+  },
   sectionTitle: { marginTop: '1.5rem', marginBottom: '0.5rem' },
   muted: { color: '#888', fontSize: '0.9rem' },
   linkBtn: {

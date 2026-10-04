@@ -3,6 +3,7 @@ import { supabase } from '../supabaseClient.js'
 import Login from './Login.jsx'
 import CourseSetup from './CourseSetup.jsx'
 import QualifierGroups from './QualifierGroups.jsx'
+import Lineup from './Lineup.jsx'
 import RoundSummary from './RoundSummary.jsx'
 import Stats from './Stats.jsx'
 import CoachDashboard from './CoachDashboard.jsx'
@@ -100,6 +101,14 @@ export default function ScoreEntry() {
   const [qualifierGroup, setQualifierGroup] = useState(null) // { group_number, tee_time, members } for the current player, once Qualifier is picked
   const [qualifierOwnChosen, setQualifierOwnChosen] = useState(false) // true once they pick "Enter My Own Round" instead of marking a teammate
   const [showQualifierGroups, setShowQualifierGroups] = useState(false) // coach-only: the group setup screen
+  const [showLineup, setShowLineup] = useState(false) // coach-only: the lineup setup/scoring screen
+  const [quickEntry, setQuickEntry] = useState(false) // coach-for-player only: skip hole-by-hole, enter one set of totals
+  const [quickForm, setQuickForm] = useState({
+    courseName: '', coursePar: '', strokes: '', putts: '',
+    fairwaysHit: '', fairwaysTotal: '', girHit: '', girTotal: '', isQualifying: false,
+  })
+  const [quickSaving, setQuickSaving] = useState(false)
+  const [quickSaved, setQuickSaved] = useState(false)
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => setSession(data.session))
@@ -241,6 +250,38 @@ export default function ScoreEntry() {
     }
   }
 
+  async function submitQuickRound() {
+    setError(null)
+    setQuickSaving(true)
+    try {
+      await apiCall('/rounds/quick', {
+        method: 'POST',
+        body: JSON.stringify({
+          for_player_id: forPlayer.id,
+          round_type: roundType,
+          course_name: quickForm.courseName,
+          course_par: Number(quickForm.coursePar),
+          strokes: Number(quickForm.strokes),
+          putts: quickForm.putts === '' ? null : Number(quickForm.putts),
+          fairways_hit: quickForm.fairwaysHit === '' ? null : Number(quickForm.fairwaysHit),
+          fairways_total: quickForm.fairwaysTotal === '' ? null : Number(quickForm.fairwaysTotal),
+          gir_hit: quickForm.girHit === '' ? null : Number(quickForm.girHit),
+          gir_total: quickForm.girTotal === '' ? null : Number(quickForm.girTotal),
+          is_qualifying: quickForm.isQualifying,
+        }),
+      })
+      setQuickSaved(true)
+      setQuickForm({
+        courseName: '', coursePar: '', strokes: '', putts: '',
+        fairwaysHit: '', fairwaysTotal: '', girHit: '', girTotal: '', isQualifying: false,
+      })
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setQuickSaving(false)
+    }
+  }
+
   async function submitHole() {
     const hole = holes[holeIndex]
     // Qualifier scorecard marking: the marker (someone else's round, which
@@ -362,6 +403,10 @@ export default function ScoreEntry() {
 
   if (showQualifierGroups) {
     return <QualifierGroups onBack={() => setShowQualifierGroups(false)} />
+  }
+
+  if (showLineup) {
+    return <Lineup onBack={() => setShowLineup(false)} />
   }
 
   if (showCourseSetup) {
@@ -495,7 +540,7 @@ export default function ScoreEntry() {
       <div style={styles.tabBar}>
         <button
           style={{ ...styles.tabBtn, ...(tab === 'play' ? styles.tabBtnActive : {}) }}
-          onClick={() => { setTab('play'); setRoundType(null); setSelectedEventId(''); setSelectedEventTeamId(''); setActiveTeamName(''); setTeamAssignmentError(null); setQualifierGroup(null); setQualifierOwnChosen(false) }}
+          onClick={() => { setTab('play'); setRoundType(null); setSelectedEventId(''); setSelectedEventTeamId(''); setActiveTeamName(''); setTeamAssignmentError(null); setQualifierGroup(null); setQualifierOwnChosen(false); setQuickEntry(false); setQuickSaved(false) }}
         >
           Play
         </button>
@@ -545,7 +590,7 @@ export default function ScoreEntry() {
 
       {tab === 'stats' && <Stats player={player} />}
       {tab === 'practice' && <Practice player={player} />}
-      {tab === 'standings' && <Standings />}
+      {tab === 'standings' && <Standings player={player} />}
       {tab === 'tournaments' && <Tournaments player={player} />}
       {tab === 'team' && player.role === 'coach' && <CoachDashboard />}
       {tab === 'play' && !roundType && pickingForPlayer && (
@@ -597,10 +642,6 @@ export default function ScoreEntry() {
 
           <p style={styles.subtitleText}>What kind of round is this?</p>
 
-          <button style={styles.roundTypeBtn} onClick={() => setRoundType('team')}>
-            <div style={styles.roundTypeName}>Team Round</div>
-            <div style={styles.roundTypeDesc}>Counts toward season standings</div>
-          </button>
           <button style={styles.roundTypeBtn} onClick={() => setRoundType('individual')}>
             <div style={styles.roundTypeName}>Individual Round</div>
             <div style={styles.roundTypeDesc}>Practice on your own — stats only, not scored toward standings</div>
@@ -636,6 +677,12 @@ export default function ScoreEntry() {
           {player.role === 'coach' && (
             <button style={styles.linkBtn} onClick={() => setShowQualifierGroups(true)}>
               ⛳ Manage Qualifier Groups
+            </button>
+          )}
+
+          {player.role === 'coach' && (
+            <button style={styles.linkBtn} onClick={() => setShowLineup(true)}>
+              📋 Manage Lineup
             </button>
           )}
 
@@ -779,12 +826,15 @@ export default function ScoreEntry() {
         <div style={styles.page}>
           <button
             style={styles.linkBtn}
-            onClick={() => { setRoundType(null); setQualifierGroup(null); setQualifierOwnChosen(false) }}
+            onClick={() => {
+              setRoundType(null); setQualifierGroup(null); setQualifierOwnChosen(false)
+              setQuickEntry(false); setQuickSaved(false)
+            }}
           >
             ← Back
           </button>
           <h2>
-            {roundType === 'team' ? 'Team Round' : roundType === 'individual' ? 'Individual Round' : 'Qualifier'}
+            {roundType === 'individual' ? 'Individual Round' : 'Qualifier'}
           </h2>
           {forPlayer && (
             <p style={styles.subtitleText}>
@@ -794,7 +844,115 @@ export default function ScoreEntry() {
             </p>
           )}
 
-          {courses.length === 0 ? (
+          {forPlayer && player.role === 'coach' && (
+            <div style={styles.entryModeRow}>
+              <button
+                style={{ ...styles.entryModeBtn, ...(!quickEntry ? styles.entryModeBtnActive : {}) }}
+                onClick={() => { setQuickEntry(false); setQuickSaved(false) }}
+              >
+                Hole by Hole
+              </button>
+              <button
+                style={{ ...styles.entryModeBtn, ...(quickEntry ? styles.entryModeBtnActive : {}) }}
+                onClick={() => { setQuickEntry(true); setQuickSaved(false) }}
+              >
+                Quick Score Entry
+              </button>
+            </div>
+          )}
+
+          {forPlayer && player.role === 'coach' && quickEntry ? (
+            <>
+              <label style={styles.label}>Course name</label>
+              <input
+                style={styles.input}
+                value={quickForm.courseName}
+                onChange={(e) => setQuickForm({ ...quickForm, courseName: e.target.value })}
+                placeholder="e.g. Pleasant Valley"
+              />
+              <label style={styles.label}>Course par</label>
+              <input
+                style={styles.input}
+                type="number"
+                inputMode="numeric"
+                value={quickForm.coursePar}
+                onChange={(e) => setQuickForm({ ...quickForm, coursePar: e.target.value })}
+                placeholder="e.g. 72"
+              />
+              <label style={styles.label}>Total score shot</label>
+              <input
+                style={styles.input}
+                type="number"
+                inputMode="numeric"
+                value={quickForm.strokes}
+                onChange={(e) => setQuickForm({ ...quickForm, strokes: e.target.value })}
+              />
+              <label style={styles.label}>Total putts</label>
+              <input
+                style={styles.input}
+                type="number"
+                inputMode="numeric"
+                value={quickForm.putts}
+                onChange={(e) => setQuickForm({ ...quickForm, putts: e.target.value })}
+              />
+              <label style={styles.label}>Fairways hit (made / total)</label>
+              <div style={styles.pairRow}>
+                <input
+                  style={styles.pairInput}
+                  type="number"
+                  inputMode="numeric"
+                  value={quickForm.fairwaysHit}
+                  onChange={(e) => setQuickForm({ ...quickForm, fairwaysHit: e.target.value })}
+                  placeholder="made"
+                />
+                <span>/</span>
+                <input
+                  style={styles.pairInput}
+                  type="number"
+                  inputMode="numeric"
+                  value={quickForm.fairwaysTotal}
+                  onChange={(e) => setQuickForm({ ...quickForm, fairwaysTotal: e.target.value })}
+                  placeholder="total"
+                />
+              </div>
+              <label style={styles.label}>Greens hit (made / total)</label>
+              <div style={styles.pairRow}>
+                <input
+                  style={styles.pairInput}
+                  type="number"
+                  inputMode="numeric"
+                  value={quickForm.girHit}
+                  onChange={(e) => setQuickForm({ ...quickForm, girHit: e.target.value })}
+                  placeholder="made"
+                />
+                <span>/</span>
+                <input
+                  style={styles.pairInput}
+                  type="number"
+                  inputMode="numeric"
+                  value={quickForm.girTotal}
+                  onChange={(e) => setQuickForm({ ...quickForm, girTotal: e.target.value })}
+                  placeholder="total"
+                />
+              </div>
+              <ToggleRow
+                label="Count toward qualifying average"
+                value={quickForm.isQualifying}
+                onChange={(v) => setQuickForm({ ...quickForm, isQualifying: v })}
+              />
+
+              {error && <p style={styles.error}>{error}</p>}
+              {quickSaved && <p style={styles.successText}>Round saved.</p>}
+
+              <button
+                style={styles.button}
+                onClick={submitQuickRound}
+                disabled={quickSaving || !quickForm.courseName || !quickForm.coursePar || !quickForm.strokes}
+              >
+                {quickSaving ? 'Saving…' : 'Save Round'}
+              </button>
+            </>
+          ) : courses.length === 0 ? (
             <p>No courses yet. {player.role === 'coach' || player.role === 'captain' ? 'Add one from the previous screen.' : 'Ask your coach to add one.'}</p>
           ) : (
             <>
@@ -1052,6 +1210,20 @@ const styles = {
     fontSize: '0.95rem',
   },
   error: { color: '#b00020', marginTop: '0.75rem' },
+  successText: { color: '#2e7d32', marginTop: '0.75rem', fontWeight: 600 },
+  entryModeRow: { display: 'flex', gap: '0.5rem', marginTop: '1rem' },
+  entryModeBtn: {
+    flex: 1,
+    padding: '0.6rem',
+    fontSize: '0.9rem',
+    border: '1px solid #004b87',
+    borderRadius: '0.4rem',
+    background: 'white',
+    color: '#004b87',
+  },
+  entryModeBtnActive: { background: '#004b87', color: 'white' },
+  pairRow: { display: 'flex', alignItems: 'center', gap: '0.5rem', marginTop: '0.25rem' },
+  pairInput: { flex: 1, padding: '0.6rem', fontSize: '1rem', boxSizing: 'border-box' },
   tabBar: {
     display: 'flex',
     flexWrap: 'wrap',

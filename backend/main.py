@@ -4,6 +4,7 @@ Run with: uvicorn main:app --reload
 """
 import os
 import random
+from datetime import datetime, timezone
 from typing import Optional
 from uuid import UUID
 
@@ -106,6 +107,51 @@ class TournamentIn(BaseModel):
     name: str
     course_id: UUID
     slug: str
+
+
+class LineupEntryIn(BaseModel):
+    slot: int
+    player_id: UUID
+
+
+class LineupEventIn(BaseModel):
+    team: str
+    name: str
+    course_name: Optional[str] = None
+    course_par: Optional[int] = None
+    entries: list[LineupEntryIn] = []
+
+
+class LineupRoundIn(BaseModel):
+    """A quick-entry (no hole-by-hole) round score for one lineup entry —
+    up to 3 per player per tournament. Strokes/par come together so to-par
+    is computable even though there's no hole_scores breakdown at all."""
+    strokes: int
+    putts: Optional[int] = None
+    fairways_hit: Optional[int] = None
+    fairways_total: Optional[int] = None
+    gir_hit: Optional[int] = None
+    gir_total: Optional[int] = None
+
+
+class QuickRoundIn(BaseModel):
+    """Coach entering a round for a player without going hole-by-hole —
+    course name + par typed directly, plus round totals."""
+    for_player_id: UUID
+    round_type: str
+    course_name: str
+    course_par: int
+    strokes: int
+    putts: Optional[int] = None
+    fairways_hit: Optional[int] = None
+    fairways_total: Optional[int] = None
+    gir_hit: Optional[int] = None
+    gir_total: Optional[int] = None
+    is_qualifying: bool = False
+
+
+class QualifyingFlagIn(BaseModel):
+    is_qualifying: bool
 
 
 # ---------------------------------------------------------------------------
@@ -497,7 +543,11 @@ def player_rounds(player_id: UUID, player=Depends(get_current_player)):
 
     rounds = (
         supabase.table("rounds")
-        .select("id, started_at, completed_at, round_type, course_id, event_id, event_team_id, marked_by, courses(name)")
+        .select(
+            "id, started_at, completed_at, round_type, course_id, event_id, event_team_id, "
+            "marked_by, is_qualifying, lineup_entry_id, summary_course_name, summary_par, "
+            "summary_strokes, courses(name)"
+        )
         .eq("player_id", str(player_id))
         .order("started_at", desc=True)
         .execute()
@@ -507,15 +557,16 @@ def player_rounds(player_id: UUID, player=Depends(get_current_player)):
     if not rounds:
         return []
 
-    round_ids = [r["id"] for r in rounds]
+    hole_based_ids = [r["id"] for r in rounds if r["summary_strokes"] is None]
     course_ids = list({r["course_id"] for r in rounds if r["course_id"]})
 
     all_scores = (
         supabase.table("hole_scores")
         .select("round_id, strokes, holes(par)")
-        .in_("round_id", round_ids)
+        .in_("round_id", hole_based_ids)
         .execute()
         .data
+        if hole_based_ids else []
     )
     scores_by_round = {}
     for s in all_scores:
@@ -531,26 +582,38 @@ def player_rounds(player_id: UUID, player=Depends(get_current_player)):
 
     results = []
     for r in rounds:
-        scores = scores_by_round.get(r["id"], [])
-        total_strokes = sum(s["strokes"] for s in scores)
-        total_par = sum(s["holes"]["par"] for s in scores)
-        course_total_holes = hole_count_by_course.get(r["course_id"], 0)
-        is_complete_length = len(scores) in (9, 18) and len(scores) == course_total_holes
-        counts_for_standings = (
-            r["round_type"] == "team" and r["completed_at"] is not None and is_complete_length
-        )
+        is_summary = r["summary_strokes"] is not None
+        if is_summary:
+            holes_played = None
+            score_to_par = r["summary_strokes"] - (r["summary_par"] or 0)
+            course_name = r["summary_course_name"] or "Unknown course"
+            counts_for_standings = False
+        else:
+            scores = scores_by_round.get(r["id"], [])
+            total_strokes = sum(s["strokes"] for s in scores)
+            total_par = sum(s["holes"]["par"] for s in scores)
+            course_total_holes = hole_count_by_course.get(r["course_id"], 0)
+            is_complete_length = len(scores) in (9, 18) and len(scores) == course_total_holes
+            holes_played = len(scores)
+            score_to_par = (total_strokes - total_par) if scores else None
+            course_name = r["courses"]["name"] if r["courses"] else "Unknown course"
+            counts_for_standings = (
+                r["round_type"] == "team" and r["completed_at"] is not None and is_complete_length
+            )
         results.append({
             "id": r["id"],
             "course_id": r["course_id"],
-            "course_name": r["courses"]["name"] if r["courses"] else "Unknown course",
+            "course_name": course_name,
             "started_at": r["started_at"],
             "completed_at": r["completed_at"],
             "round_type": r["round_type"],
             "event_id": r["event_id"],
             "event_team_id": r["event_team_id"],
             "marked_by": r["marked_by"],
-            "holes_played": len(scores),
-            "score_to_par": (total_strokes - total_par) if scores else None,
+            "is_qualifying": r["is_qualifying"],
+            "is_summary": is_summary,
+            "holes_played": holes_played,
+            "score_to_par": score_to_par,
             "completed": r["completed_at"] is not None,
             "counts_for_standings": counts_for_standings,
         })
@@ -658,81 +721,374 @@ def get_my_qualifier_group(player=Depends(get_current_player)):
     }
 
 
+# ---------------------------------------------------------------------------
+# Lineups — a coach-set 1-10 roster lineup per team, tied to a specific
+# tournament (course name + par typed directly, not the Course/holes
+# system). Replaces the old auto-computed "Lineup" standings tier: slots
+# 1-5 are always the starting lineup, 6-10 are individual entries UNLESS
+# all 10 are filled, in which case 6-10 becomes a full second (B) lineup —
+# derived purely from how many slots are filled, nothing stored for it.
+# Also where the coach enters up to 3 quick-score tournament rounds per
+# player once the lineup is set (see add_lineup_round).
+# ---------------------------------------------------------------------------
+
+def _lineup_category(slot: int, total_filled: int) -> str:
+    if slot <= 5:
+        return "Starting Lineup" if total_filled <= 5 else "A Team"
+    return "B Team" if total_filled >= 10 else "Individual"
+
+
+@app.post("/lineups")
+def create_lineup(body: LineupEventIn, player=Depends(get_current_player)):
+    if player["role"] != "coach":
+        raise HTTPException(403, "Coach access only")
+    if body.team not in ("men", "women"):
+        raise HTTPException(400, "team must be 'men' or 'women'")
+    slots = [e.slot for e in body.entries]
+    if len(slots) != len(set(slots)) or any(s < 1 or s > 10 for s in slots):
+        raise HTTPException(400, "Slots must be unique and between 1 and 10")
+
+    event_row = supabase.table("lineup_events").insert({
+        "team": body.team,
+        "name": body.name,
+        "course_name": body.course_name,
+        "course_par": body.course_par,
+        "created_by": player["id"],
+    }).execute().data[0]
+
+    if body.entries:
+        supabase.table("lineup_entries").insert([
+            {"lineup_event_id": event_row["id"], "player_id": str(e.player_id), "slot": e.slot}
+            for e in body.entries
+        ]).execute()
+
+    return get_lineup(UUID(event_row["id"]), player)
+
+
+@app.get("/lineups")
+def list_lineups(team: str, player=Depends(get_current_player)):
+    if team not in ("men", "women"):
+        raise HTTPException(400, "team must be 'men' or 'women'")
+    events = (
+        supabase.table("lineup_events")
+        .select("id, name, course_name, course_par, created_at")
+        .eq("team", team)
+        .order("created_at", desc=True)
+        .execute()
+        .data
+    )
+    return events
+
+
+@app.get("/lineups/{lineup_event_id}")
+def get_lineup(lineup_event_id: UUID, player=Depends(get_current_player)):
+    event = supabase.table("lineup_events").select("*").eq("id", str(lineup_event_id)).single().execute().data
+    if not event:
+        raise HTTPException(404, "Lineup not found")
+
+    entries = (
+        supabase.table("lineup_entries")
+        .select("id, slot, players(id, full_name)")
+        .eq("lineup_event_id", str(lineup_event_id))
+        .order("slot")
+        .execute()
+        .data
+    )
+    total_filled = len(entries)
+    entry_ids = [e["id"] for e in entries]
+
+    rounds_by_entry = {}
+    if entry_ids:
+        rounds = (
+            supabase.table("rounds")
+            .select(
+                "id, lineup_entry_id, summary_strokes, summary_par, summary_putts, "
+                "summary_fairways_hit, summary_fairways_total, summary_gir_hit, "
+                "summary_gir_total, completed_at"
+            )
+            .in_("lineup_entry_id", entry_ids)
+            .order("completed_at")
+            .execute()
+            .data
+        )
+        for r in rounds:
+            rounds_by_entry.setdefault(r["lineup_entry_id"], []).append(r)
+
+    entry_results = []
+    for e in entries:
+        rounds_for_entry = rounds_by_entry.get(e["id"], [])
+        to_pars = [r["summary_strokes"] - (r["summary_par"] or 0) for r in rounds_for_entry]
+        entry_results.append({
+            "id": e["id"],
+            "slot": e["slot"],
+            "category": _lineup_category(e["slot"], total_filled),
+            "player_id": e["players"]["id"],
+            "full_name": e["players"]["full_name"],
+            "tournament_avg_to_par": round(sum(to_pars) / len(to_pars), 2) if to_pars else None,
+            "rounds": [
+                {
+                    "id": r["id"],
+                    "strokes": r["summary_strokes"],
+                    "to_par": r["summary_strokes"] - (r["summary_par"] or 0),
+                    "putts": r["summary_putts"],
+                    "fairways_hit": r["summary_fairways_hit"],
+                    "fairways_total": r["summary_fairways_total"],
+                    "gir_hit": r["summary_gir_hit"],
+                    "gir_total": r["summary_gir_total"],
+                }
+                for r in rounds_for_entry
+            ],
+        })
+
+    return {
+        "id": event["id"],
+        "team": event["team"],
+        "name": event["name"],
+        "course_name": event["course_name"],
+        "course_par": event["course_par"],
+        "entries": entry_results,
+    }
+
+
+@app.post("/lineups/{lineup_event_id}/entries/{entry_id}/rounds")
+def add_lineup_round(lineup_event_id: UUID, entry_id: UUID, body: LineupRoundIn, player=Depends(get_current_player)):
+    """Coach-only: logs one of a player's up-to-3 tournament round scores for
+    this lineup entry. Always a quick/summary entry — no hole-by-hole here —
+    and always counts toward qualifying + individual averages (is_qualifying
+    is forced true), per how real tournament rounds should count."""
+    if player["role"] != "coach":
+        raise HTTPException(403, "Coach access only")
+
+    entry = (
+        supabase.table("lineup_entries")
+        .select("id, player_id, lineup_event_id")
+        .eq("id", str(entry_id))
+        .single()
+        .execute()
+        .data
+    )
+    if not entry or entry["lineup_event_id"] != str(lineup_event_id):
+        raise HTTPException(404, "Lineup entry not found")
+
+    existing = supabase.table("rounds").select("id").eq("lineup_entry_id", str(entry_id)).execute().data
+    if len(existing) >= 3:
+        raise HTTPException(400, "Already have 3 rounds logged for this player in this tournament")
+
+    event = (
+        supabase.table("lineup_events")
+        .select("course_name, course_par")
+        .eq("id", str(lineup_event_id))
+        .single()
+        .execute()
+        .data
+    )
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    row = supabase.table("rounds").insert({
+        "player_id": entry["player_id"],
+        "round_type": "tournament",
+        "lineup_entry_id": str(entry_id),
+        "is_qualifying": True,
+        "completed_at": now_iso,
+        "summary_course_name": event["course_name"],
+        "summary_par": event["course_par"],
+        "summary_strokes": body.strokes,
+        "summary_putts": body.putts,
+        "summary_fairways_hit": body.fairways_hit,
+        "summary_fairways_total": body.fairways_total,
+        "summary_gir_hit": body.gir_hit,
+        "summary_gir_total": body.gir_total,
+    }).execute().data[0]
+    return row
+
+
+@app.post("/rounds/quick")
+def quick_round(body: QuickRoundIn, player=Depends(get_current_player)):
+    """Coach-only: logs a round for a player without hole-by-hole entry —
+    just the course name/par and the round's totals. Completes immediately."""
+    if player["role"] != "coach":
+        raise HTTPException(403, "Coach access only")
+    if body.round_type not in VALID_ROUND_TYPES:
+        raise HTTPException(400, f"Invalid round_type: {body.round_type}")
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    row = supabase.table("rounds").insert({
+        "player_id": str(body.for_player_id),
+        "round_type": body.round_type,
+        "is_qualifying": body.is_qualifying or body.round_type == "qualifier",
+        "completed_at": now_iso,
+        "summary_course_name": body.course_name,
+        "summary_par": body.course_par,
+        "summary_strokes": body.strokes,
+        "summary_putts": body.putts,
+        "summary_fairways_hit": body.fairways_hit,
+        "summary_fairways_total": body.fairways_total,
+        "summary_gir_hit": body.gir_hit,
+        "summary_gir_total": body.gir_total,
+    }).execute().data[0]
+    return row
+
+
+@app.patch("/rounds/{round_id}/qualifying")
+def set_round_qualifying(round_id: UUID, body: QualifyingFlagIn, player=Depends(get_current_player)):
+    """Coach-only: manually marks (or unmarks) any round — team, individual,
+    or tournament — as counting toward the qualifying scoring average,
+    independent of what round_type it was actually played as."""
+    if player["role"] != "coach":
+        raise HTTPException(403, "Coach access only")
+    round_row = supabase.table("rounds").select("id").eq("id", str(round_id)).single().execute().data
+    if not round_row:
+        raise HTTPException(404, "Round not found")
+    updated = (
+        supabase.table("rounds")
+        .update({"is_qualifying": body.is_qualifying})
+        .eq("id", str(round_id))
+        .execute()
+        .data[0]
+    )
+    return updated
+
+
+def _fold_rounds_into_stats(rounds_for_player: list, scores_by_round: dict) -> dict:
+    """Core aggregation shared by _compute_player_stats (one player) and
+    _compute_bulk_stats (whole roster at once). Folds a player's completed
+    rounds — hole-by-hole AND quick/summary-entry alike — into:
+      - scoring_avg_to_par: EVERY completed round of any type counts (this
+        is the all-inclusive "Individual" combined average).
+      - qualifying_avg_to_par: only rounds actually played as
+        round_type='qualifier' OR manually flagged is_qualifying by the
+        coach (tournament/lineup rounds are auto-flagged this way).
+      - tournament_avg_to_par: only rounds tied to a lineup entry.
+    `rounds_for_player` must be sorted newest-first and include the
+    is_qualifying/lineup_entry_id/summary_* columns."""
+    if not rounds_for_player:
+        return {"rounds_played": 0, "last_round": None}
+
+    total_score_to_par = 0
+    fairways_hit = fairways_total = 0
+    girs_hit = girs_total = 0
+    putts_total = 0
+    rounds_counted = 0
+    qualifying_to_par = []
+    tournament_to_par = []
+
+    for r in rounds_for_player:
+        is_summary = r.get("summary_strokes") is not None
+        if is_summary:
+            to_par = r["summary_strokes"] - (r.get("summary_par") or 0)
+            if r.get("summary_putts"):
+                putts_total += r["summary_putts"]
+            if r.get("summary_fairways_total"):
+                fairways_total += r["summary_fairways_total"]
+                fairways_hit += r.get("summary_fairways_hit") or 0
+            if r.get("summary_gir_total"):
+                girs_total += r["summary_gir_total"]
+                girs_hit += r.get("summary_gir_hit") or 0
+            total_score_to_par += to_par
+            rounds_counted += 1
+        else:
+            scores = scores_by_round.get(r["id"], [])
+            if not scores:
+                continue
+            round_putts = 0
+            for s in scores:
+                if s["gir"]:
+                    girs_hit += 1
+                girs_total += 1
+                if s["fairway_hit"] is not None:
+                    fairways_total += 1
+                    if s["fairway_hit"]:
+                        fairways_hit += 1
+                if s["putts"]:
+                    round_putts += s["putts"]
+            to_par = sum(s["strokes"] for s in scores) - sum(s["holes"]["par"] for s in scores)
+            total_score_to_par += to_par
+            putts_total += round_putts
+            rounds_counted += 1
+
+        if r.get("round_type") == "qualifier" or r.get("is_qualifying"):
+            qualifying_to_par.append(to_par)
+        if r.get("lineup_entry_id"):
+            tournament_to_par.append(to_par)
+
+    if rounds_counted == 0:
+        return {"rounds_played": 0, "last_round": None}
+
+    # Front-9 / back-9 breakdown for the most recent completed round — only
+    # meaningful for a hole-by-hole round; a summary round just has a total.
+    most_recent = rounds_for_player[0]
+    if most_recent.get("summary_strokes") is not None:
+        last_round = {
+            "date": most_recent["completed_at"],
+            "front9_to_par": None,
+            "back9_to_par": None,
+            "total_to_par": most_recent["summary_strokes"] - (most_recent.get("summary_par") or 0),
+        }
+    else:
+        last_scores = scores_by_round.get(most_recent["id"], [])
+        front = [s for s in last_scores if s["holes"]["hole_number"] <= 9]
+        back = [s for s in last_scores if s["holes"]["hole_number"] > 9]
+
+        def _to_par(scores):
+            if not scores:
+                return None
+            return sum(s["strokes"] for s in scores) - sum(s["holes"]["par"] for s in scores)
+
+        last_round = {
+            "date": most_recent["completed_at"],
+            "front9_to_par": _to_par(front),
+            "back9_to_par": _to_par(back),
+            "total_to_par": _to_par(last_scores),
+        }
+
+    return {
+        "rounds_played": rounds_counted,
+        "scoring_avg_to_par": round(total_score_to_par / rounds_counted, 2),
+        "qualifying_avg_to_par": round(sum(qualifying_to_par) / len(qualifying_to_par), 2) if qualifying_to_par else None,
+        "tournament_avg_to_par": round(sum(tournament_to_par) / len(tournament_to_par), 2) if tournament_to_par else None,
+        "gir_pct": round(100 * girs_hit / girs_total, 1) if girs_total else None,
+        "fairway_pct": round(100 * fairways_hit / fairways_total, 1) if fairways_total else None,
+        "putts_per_round": round(putts_total / rounds_counted, 2),
+        "last_round": last_round,
+    }
+
+
+_ROUND_STATS_COLUMNS = (
+    "id, completed_at, round_type, course_id, is_qualifying, lineup_entry_id, "
+    "summary_strokes, summary_par, summary_putts, summary_fairways_hit, "
+    "summary_fairways_total, summary_gir_hit, summary_gir_total"
+)
+
+
 def _compute_player_stats(player_id: str) -> dict:
     """Shared stats logic — used by both the player's own stats screen and
     the coach's team overview, so both stay consistent."""
     completed_rounds = (
         supabase.table("rounds")
-        .select("id, completed_at")
+        .select(_ROUND_STATS_COLUMNS)
         .eq("player_id", player_id)
         .not_.is_("completed_at", "null")
         .order("completed_at", desc=True)
         .execute()
         .data
     )
-
     if not completed_rounds:
         return {"rounds_played": 0, "last_round": None}
 
-    round_ids = [r["id"] for r in completed_rounds]
-
+    hole_based_ids = [r["id"] for r in completed_rounds if r["summary_strokes"] is None]
     all_scores = (
         supabase.table("hole_scores")
-        .select("round_id, strokes, putts, fairway_hit, gir, holes(par)")
-        .in_("round_id", round_ids)
+        .select("round_id, strokes, putts, fairway_hit, gir, holes(hole_number, par)")
+        .in_("round_id", hole_based_ids)
         .execute()
         .data
+        if hole_based_ids else []
     )
-
-    total_score_to_par = 0
-    fairways_hit = fairways_total = 0
-    girs_hit = holes_total = 0
-    putts_total = 0
-
+    scores_by_round = {}
     for s in all_scores:
-        total_score_to_par += s["strokes"] - s["holes"]["par"]
-        holes_total += 1
-        if s["gir"]:
-            girs_hit += 1
-        if s["fairway_hit"] is not None:
-            fairways_total += 1
-            if s["fairway_hit"]:
-                fairways_hit += 1
-        if s["putts"]:
-            putts_total += s["putts"]
+        scores_by_round.setdefault(s["round_id"], []).append(s)
 
-    # Front-9 / back-9 breakdown for the most recent completed round
-    most_recent_id = completed_rounds[0]["id"]
-    last_round_scores = (
-        supabase.table("hole_scores")
-        .select("strokes, holes(hole_number, par)")
-        .eq("round_id", most_recent_id)
-        .execute()
-        .data
-    )
-    front = [s for s in last_round_scores if s["holes"]["hole_number"] <= 9]
-    back = [s for s in last_round_scores if s["holes"]["hole_number"] > 9]
-
-    def to_par(scores):
-        if not scores:
-            return None
-        return sum(s["strokes"] for s in scores) - sum(s["holes"]["par"] for s in scores)
-
-    last_round = {
-        "date": completed_rounds[0]["completed_at"],
-        "front9_to_par": to_par(front),
-        "back9_to_par": to_par(back),
-        "total_to_par": to_par(last_round_scores),
-    }
-
-    return {
-        "rounds_played": len(completed_rounds),
-        "scoring_avg_to_par": round(total_score_to_par / len(completed_rounds), 2),
-        "gir_pct": round(100 * girs_hit / holes_total, 1) if holes_total else None,
-        "fairway_pct": round(100 * fairways_hit / fairways_total, 1) if fairways_total else None,
-        "putts_per_round": round(putts_total / len(completed_rounds), 2),
-        "last_round": last_round,
-    }
+    return _fold_rounds_into_stats(completed_rounds, scores_by_round)
 
 
 @app.get("/players/{player_id}/stats")
@@ -753,7 +1109,7 @@ def _compute_bulk_stats(player_ids: list[str]) -> dict:
 
     completed_rounds = (
         supabase.table("rounds")
-        .select("id, player_id, completed_at")
+        .select(f"player_id, {_ROUND_STATS_COLUMNS}")
         .in_("player_id", player_ids)
         .not_.is_("completed_at", "null")
         .order("completed_at", desc=True)
@@ -765,14 +1121,14 @@ def _compute_bulk_stats(player_ids: list[str]) -> dict:
     for r in completed_rounds:
         by_player.setdefault(r["player_id"], []).append(r)
 
-    all_round_ids = [r["id"] for r in completed_rounds]
+    hole_based_ids = [r["id"] for r in completed_rounds if r["summary_strokes"] is None]
     all_scores = (
         supabase.table("hole_scores")
         .select("round_id, strokes, putts, fairway_hit, gir, holes(hole_number, par)")
-        .in_("round_id", all_round_ids)
+        .in_("round_id", hole_based_ids)
         .execute()
         .data
-        if all_round_ids else []
+        if hole_based_ids else []
     )
     scores_by_round = {}
     for s in all_scores:
@@ -780,53 +1136,7 @@ def _compute_bulk_stats(player_ids: list[str]) -> dict:
 
     results = {}
     for pid in player_ids:
-        rounds_for_player = by_player.get(pid, [])
-        if not rounds_for_player:
-            results[pid] = {"rounds_played": 0, "last_round": None}
-            continue
-
-        total_score_to_par = 0
-        fairways_hit = fairways_total = 0
-        girs_hit = holes_total = 0
-        putts_total = 0
-
-        for r in rounds_for_player:
-            for s in scores_by_round.get(r["id"], []):
-                total_score_to_par += s["strokes"] - s["holes"]["par"]
-                holes_total += 1
-                if s["gir"]:
-                    girs_hit += 1
-                if s["fairway_hit"] is not None:
-                    fairways_total += 1
-                    if s["fairway_hit"]:
-                        fairways_hit += 1
-                if s["putts"]:
-                    putts_total += s["putts"]
-
-        most_recent = rounds_for_player[0]
-        last_scores = scores_by_round.get(most_recent["id"], [])
-        front = [s for s in last_scores if s["holes"]["hole_number"] <= 9]
-        back = [s for s in last_scores if s["holes"]["hole_number"] > 9]
-
-        def to_par(scores):
-            if not scores:
-                return None
-            return sum(s["strokes"] for s in scores) - sum(s["holes"]["par"] for s in scores)
-
-        results[pid] = {
-            "rounds_played": len(rounds_for_player),
-            "scoring_avg_to_par": round(total_score_to_par / len(rounds_for_player), 2),
-            "gir_pct": round(100 * girs_hit / holes_total, 1) if holes_total else None,
-            "fairway_pct": round(100 * fairways_hit / fairways_total, 1) if fairways_total else None,
-            "putts_per_round": round(putts_total / len(rounds_for_player), 2),
-            "last_round": {
-                "date": most_recent["completed_at"],
-                "front9_to_par": to_par(front),
-                "back9_to_par": to_par(back),
-                "total_to_par": to_par(last_scores),
-            },
-        }
-
+        results[pid] = _fold_rounds_into_stats(by_player.get(pid, []), scores_by_round)
     return results
 
 
@@ -1611,12 +1921,80 @@ def standings(team: str, player=Depends(get_current_player)):
     return entries
 
 
+def _compute_round_leaderboard_avgs(player_ids: list[str], mode: str) -> dict:
+    """mode='individual' -> EVERY completed round of any type (hole-by-hole
+    or quick/summary-entry) counts, giving each player's combined season
+    average across everything they've played — Individual Standings is
+    meant to track every round no matter how it was classified.
+    mode='qualifier' -> only rounds actually played as round_type='qualifier'
+    OR manually flagged is_qualifying by the coach (which already covers
+    every tournament/lineup round, flagged that way automatically)."""
+    if not player_ids:
+        return {}
+
+    rounds = (
+        supabase.table("rounds")
+        .select("id, player_id, course_id, round_type, is_qualifying, summary_strokes, summary_par")
+        .in_("player_id", player_ids)
+        .not_.is_("completed_at", "null")
+        .execute()
+        .data
+    )
+    if mode == "qualifier":
+        rounds = [r for r in rounds if r["round_type"] == "qualifier" or r["is_qualifying"]]
+    if not rounds:
+        return {pid: None for pid in player_ids}
+
+    hole_based = [r for r in rounds if r["summary_strokes"] is None]
+    round_ids = [r["id"] for r in hole_based]
+    course_ids = list({r["course_id"] for r in hole_based if r["course_id"]})
+
+    all_scores = (
+        supabase.table("hole_scores")
+        .select("round_id, strokes, holes(par)")
+        .in_("round_id", round_ids)
+        .execute()
+        .data
+        if round_ids else []
+    )
+    scores_by_round = {}
+    for s in all_scores:
+        scores_by_round.setdefault(s["round_id"], []).append(s)
+
+    all_holes = (
+        supabase.table("holes").select("course_id").in_("course_id", course_ids).execute().data
+        if course_ids else []
+    )
+    hole_count_by_course = {}
+    for h in all_holes:
+        hole_count_by_course[h["course_id"]] = hole_count_by_course.get(h["course_id"], 0) + 1
+
+    scores_to_par_by_player = {}
+    for r in rounds:
+        if r["summary_strokes"] is not None:
+            to_par = r["summary_strokes"] - (r["summary_par"] or 0)
+            scores_to_par_by_player.setdefault(r["player_id"], []).append(to_par)
+            continue
+        scores = scores_by_round.get(r["id"], [])
+        course_total_holes = hole_count_by_course.get(r["course_id"], 0)
+        if len(scores) in (9, 18) and len(scores) == course_total_holes:
+            total_strokes = sum(s["strokes"] for s in scores)
+            total_par = sum(s["holes"]["par"] for s in scores)
+            scores_to_par_by_player.setdefault(r["player_id"], []).append(total_strokes - total_par)
+
+    results = {}
+    for pid in player_ids:
+        vals = scores_to_par_by_player.get(pid)
+        results[pid] = round(sum(vals) / len(vals), 2) if vals else None
+    return results
+
+
 @app.get("/round-leaderboard")
 def round_leaderboard(team: str, round_type: str, player=Depends(get_current_player)):
-    """Individual Standings (round_type='individual') and Qualifier
-    Leaderboard (round_type='qualifier') — same shape as /standings, but no
-    lineup tiers, since 'starting lineup' is specifically a team-round
-    concept."""
+    """Individual Standings (round_type='individual' -> every round, any
+    type) and Qualifier Leaderboard (round_type='qualifier' -> qualifier-
+    type or coach-flagged rounds) — same shape as /standings, but no lineup
+    tiers, since the starting lineup is now the coach-set Lineup feature."""
     if team not in ("men", "women"):
         raise HTTPException(400, "team must be 'men' or 'women'")
     if round_type not in ("individual", "qualifier"):
@@ -1632,7 +2010,7 @@ def round_leaderboard(team: str, round_type: str, player=Depends(get_current_pla
     )
 
     entries = []
-    avgs = _compute_standings_avgs([p["id"] for p in roster], round_type)
+    avgs = _compute_round_leaderboard_avgs([p["id"] for p in roster], round_type)
     for p in roster:
         entries.append({"player_id": p["id"], "full_name": p["full_name"], "scoring_avg_to_par": avgs[p["id"]]})
 

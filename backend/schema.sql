@@ -310,3 +310,61 @@ create policy "anyone signed in reads qualifier_groups" on qualifier_groups
     for select using (auth.role() = 'authenticated');
 create policy "anyone signed in reads qualifier_group_members" on qualifier_group_members
     for select using (auth.role() = 'authenticated');
+
+-- Quick/summary round entry: a round entered as a single total (course
+-- name + par typed directly, no hole-by-hole breakdown) instead of going
+-- through the Course/holes system. course_id stays null for these.
+alter table rounds alter column course_id drop not null;
+
+-- Manual "count this toward the qualifying scoring average" override.
+-- round_type = 'qualifier' always counts regardless of this flag; this
+-- flag additionally lets the coach designate ANY round (team, individual,
+-- or tournament) as counting toward qualifying, by coaching judgment.
+alter table rounds add column is_qualifying boolean not null default false;
+
+-- When summary_strokes is set, this round has NO hole_scores rows at all —
+-- every stats/standings calculation falls back to these totals for it.
+alter table rounds add column summary_course_name text;
+alter table rounds add column summary_par int;
+alter table rounds add column summary_strokes int;
+alter table rounds add column summary_putts int;
+alter table rounds add column summary_fairways_hit int;
+alter table rounds add column summary_fairways_total int;
+alter table rounds add column summary_gir_hit int;
+alter table rounds add column summary_gir_total int;
+
+-- Lineups: a coach-set 1-10 roster lineup per team, tied to a specific
+-- tournament (course name + par typed directly). Slots 1-5 are always the
+-- starting lineup; 6-10 are individual entries unless all 10 slots are
+-- filled, in which case 6-10 becomes a full second (B) lineup — derived in
+-- the backend purely from how many slots are filled, nothing stored here.
+create table lineup_events (
+    id uuid primary key default gen_random_uuid(),
+    team text not null check (team in ('men', 'women')),
+    name text not null,
+    course_name text,
+    course_par int,
+    created_by uuid references players(id),
+    created_at timestamptz default now()
+);
+
+create table lineup_entries (
+    id uuid primary key default gen_random_uuid(),
+    lineup_event_id uuid not null references lineup_events(id) on delete cascade,
+    player_id uuid not null references players(id) on delete cascade,
+    slot int not null check (slot between 1 and 10),
+    unique (lineup_event_id, slot),
+    unique (lineup_event_id, player_id)
+);
+
+-- Ties a tournament round (quick-entry, up to 3 per lineup entry) back to
+-- the lineup slot it was scored for, so tournament averages can be computed.
+alter table rounds add column lineup_entry_id uuid references lineup_entries(id);
+
+alter table lineup_events enable row level security;
+alter table lineup_entries enable row level security;
+
+create policy "anyone signed in reads lineup_events" on lineup_events
+    for select using (auth.role() = 'authenticated');
+create policy "anyone signed in reads lineup_entries" on lineup_entries
+    for select using (auth.role() = 'authenticated');
