@@ -122,6 +122,14 @@ class LineupEventIn(BaseModel):
     entries: list[LineupEntryIn] = []
 
 
+class LineupEntriesPatchIn(BaseModel):
+    """For adding (or reassigning an empty) slot to an already-saved
+    lineup — e.g. 3 locked-in players now, the other 3 once they're known.
+    Only the slots included here are touched; every other slot is left
+    exactly as it was."""
+    entries: list[LineupEntryIn]
+
+
 class LineupRoundIn(BaseModel):
     """A quick-entry (no hole-by-hole) round score for one lineup entry —
     up to 3 per player per tournament. Strokes/par come together so to-par
@@ -778,6 +786,54 @@ def list_lineups(team: str, player=Depends(get_current_player)):
         .data
     )
     return events
+
+
+@app.patch("/lineups/{lineup_event_id}/entries")
+def update_lineup_entries(lineup_event_id: UUID, body: LineupEntriesPatchIn, player=Depends(get_current_player)):
+    """Coach-only: adds players to still-empty slots (or reassigns a slot
+    that has no player yet) on an already-saved lineup, without touching
+    any slot not included in this request — this is how you come back
+    later and fill in the rest of the lineup once you know who's in."""
+    if player["role"] != "coach":
+        raise HTTPException(403, "Coach access only")
+
+    event = supabase.table("lineup_events").select("id").eq("id", str(lineup_event_id)).single().execute().data
+    if not event:
+        raise HTTPException(404, "Lineup not found")
+
+    slots = [e.slot for e in body.entries]
+    if len(slots) != len(set(slots)) or any(s < 1 or s > 10 for s in slots):
+        raise HTTPException(400, "Slots must be unique and between 1 and 10")
+
+    existing = (
+        supabase.table("lineup_entries")
+        .select("id, slot, player_id")
+        .eq("lineup_event_id", str(lineup_event_id))
+        .execute()
+        .data
+    )
+    existing_by_slot = {e["slot"]: e for e in existing}
+    existing_player_ids = {e["player_id"] for e in existing}
+
+    for e in body.entries:
+        pid = str(e.player_id)
+        current = existing_by_slot.get(e.slot)
+        if current:
+            if current["player_id"] == pid:
+                continue
+            if pid in existing_player_ids:
+                raise HTTPException(400, "That player is already assigned to a slot in this lineup")
+            supabase.table("lineup_entries").update({"player_id": pid}).eq("id", current["id"]).execute()
+        else:
+            if pid in existing_player_ids:
+                raise HTTPException(400, "That player is already assigned to a slot in this lineup")
+            supabase.table("lineup_entries").insert({
+                "lineup_event_id": str(lineup_event_id),
+                "player_id": pid,
+                "slot": e.slot,
+            }).execute()
+
+    return get_lineup(lineup_event_id, player)
 
 
 @app.get("/lineups/{lineup_event_id}")

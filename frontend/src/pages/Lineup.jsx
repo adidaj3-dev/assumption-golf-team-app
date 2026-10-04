@@ -49,6 +49,12 @@ export default function Lineup({ onBack }) {
   const [scoreForm, setScoreForm] = useState({ strokes: '', putts: '', fairwaysHit: '', fairwaysTotal: '', girHit: '', girTotal: '' })
   const [scoreSaving, setScoreSaving] = useState(false)
 
+  // Add-players editor, for filling in the rest of an already-saved lineup
+  const [addingPlayers, setAddingPlayers] = useState(false)
+  const [addRoster, setAddRoster] = useState(null)
+  const [addSlotAssignments, setAddSlotAssignments] = useState({}) // slot -> player_id, empty slots only
+  const [addSaving, setAddSaving] = useState(false)
+
   useEffect(() => {
     if (!team) return
     authedFetch(`/lineups?team=${team}`).then(setLineups).catch((err) => setError(err.message))
@@ -66,7 +72,41 @@ export default function Lineup({ onBack }) {
   function openDetail(id) {
     setView('detail')
     setDetail(null)
+    setAddingPlayers(false)
+    setAddSlotAssignments({})
     authedFetch(`/lineups/${id}`).then(setDetail).catch((err) => setError(err.message))
+  }
+
+  function startAddingPlayers() {
+    setAddingPlayers(true)
+    setAddSlotAssignments({})
+    setError(null)
+    if (!addRoster) authedFetch('/team/players').then(setAddRoster).catch((err) => setError(err.message))
+  }
+
+  async function saveAddedPlayers() {
+    setAddSaving(true)
+    setError(null)
+    try {
+      const entries = Object.entries(addSlotAssignments)
+        .filter(([, pid]) => pid)
+        .map(([slot, pid]) => ({ slot: Number(slot), player_id: pid }))
+      if (entries.length === 0) {
+        setAddingPlayers(false)
+        return
+      }
+      const updated = await authedFetch(`/lineups/${detail.id}/entries`, {
+        method: 'PATCH',
+        body: JSON.stringify({ entries }),
+      })
+      setDetail(updated)
+      setAddingPlayers(false)
+      setAddSlotAssignments({})
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setAddSaving(false)
+    }
   }
 
   async function saveLineup() {
@@ -210,6 +250,50 @@ export default function Lineup({ onBack }) {
         )}
 
         {detail.entries.length === 0 && <p style={styles.muted}>No players assigned yet.</p>}
+        {detail.entries.length < 10 && !addingPlayers && (
+          <button style={styles.addRoundBtn} onClick={startAddingPlayers}>
+            + Add Players ({detail.entries.length}/10 filled)
+          </button>
+        )}
+
+        {addingPlayers && (
+          <div style={styles.entryCard}>
+            <div style={styles.entryName}>Fill in the rest</div>
+            <p style={styles.entryCategory}>Only empty slots are shown — the ones already set are left alone.</p>
+            {!addRoster ? (
+              <p>Loading roster…</p>
+            ) : (
+              SLOTS.filter((slot) => !detail.entries.some((e) => e.slot === slot)).map((slot) => {
+                const usedIds = new Set([
+                  ...detail.entries.map((e) => e.player_id),
+                  ...Object.entries(addSlotAssignments).filter(([s]) => Number(s) !== slot).map(([, pid]) => pid),
+                ])
+                return (
+                  <div key={slot} style={styles.slotRow}>
+                    <span style={styles.slotNumber}>{slot}</span>
+                    <select
+                      style={styles.select}
+                      value={addSlotAssignments[slot] || ''}
+                      onChange={(ev) => setAddSlotAssignments({ ...addSlotAssignments, [slot]: ev.target.value })}
+                    >
+                      <option value="">— empty —</option>
+                      {addRoster.filter((p) => !usedIds.has(p.id)).map((p) => (
+                        <option key={p.id} value={p.id}>{p.full_name}</option>
+                      ))}
+                    </select>
+                    <span style={styles.slotCategoryHint}>{slot <= 5 ? 'Starting' : 'Individual'}</span>
+                  </div>
+                )
+              })
+            )}
+            <div style={styles.scoreFormButtons}>
+              <button style={styles.smallBtn} onClick={() => { setAddingPlayers(false); setAddSlotAssignments({}) }}>Cancel</button>
+              <button style={styles.smallBtnPrimary} onClick={saveAddedPlayers} disabled={addSaving}>
+                {addSaving ? 'Saving…' : 'Save'}
+              </button>
+            </div>
+          </div>
+        )}
 
         {detail.entries.map((e) => (
           <div key={e.id} style={styles.entryCard}>
