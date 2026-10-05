@@ -54,7 +54,7 @@ export default function Standings({ player }) {
   }
 
   async function openTeam(section, t) {
-    setActiveSection(section)
+    setActiveSection(section.key)
     setTeam(t)
     setEntries(null)
     setError(null)
