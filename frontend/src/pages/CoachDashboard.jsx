@@ -202,7 +202,12 @@ export default function CoachDashboard() {
             <button key={r.round_id} style={styles.roundRow} onClick={() => openRound(r.round_id, 'live')}>
               <div>
                 <div style={styles.roundCourse}>{r.player_name}</div>
-                <div style={styles.roundDate}>{r.course_name} · Hole {r.current_hole}</div>
+                <div style={styles.roundDate}>
+                  {r.course_name} · {r.holes_played === 0 ? 'Not started' : `Thru ${r.holes_played}`}
+                  {r.round_type === 'qualifier' && r.marker_name && ` · kept by ${r.marker_name}`}
+                  {r.round_type === 'qualifier' && (r.marker_signed || r.player_signed) &&
+                    ` · ${r.marker_signed && r.player_signed ? 'signed' : 'half signed'}`}
+                </div>
               </div>
               <div style={styles.roundScore}>{formatToPar(r.score_to_par)}</div>
             </button>

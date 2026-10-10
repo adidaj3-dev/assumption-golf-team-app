@@ -235,7 +235,7 @@ def get_public_leaderboard(slug: str):
 
     rounds = (
         supabase.table("rounds")
-        .select("id, completed_at, players(full_name)")
+        .select("id, completed_at, players!player_id(full_name)")
         .eq("tournament_id", tournament["id"])
         .execute()
         .data
@@ -315,32 +315,9 @@ def start_round(r: RoundStartIn, player=Depends(get_current_player)):
         if player["role"] == "coach":
             target_player_id = str(r.for_player_id)
         else:
-            # Non-coach: this is a qualifier-group teammate marking another
-            # teammate's scorecard (real-tournament-style — you keep a
-            # groupmate's strokes, they separately log their own putts/
-            # fairway/GIR). Only allowed within the same qualifier group.
-            if r.round_type != "qualifier":
-                raise HTTPException(403, "You can only mark a teammate's scorecard for a Qualifier round")
-            if not _same_qualifier_group(player["id"], str(r.for_player_id)):
-                raise HTTPException(403, "You're not in the same qualifier group as that player")
-            target_player_id = str(r.for_player_id)
-            marked_by = player["id"]
-
-            # Resume the round already in progress rather than starting a
-            # second, competing scorecard for the same player.
-            existing = (
-                supabase.table("rounds")
-                .select("*")
-                .eq("player_id", target_player_id)
-                .eq("round_type", "qualifier")
-                .eq("marked_by", marked_by)
-                .is_("completed_at", "null")
-                .order("started_at", desc=True)
-                .execute()
-                .data
-            )
-            if existing:
-                return existing[0]
+            # Players keep qualifier cards through /qualifier/start (the
+            # marker-rotation flow), never by starting a round for someone else.
+            raise HTTPException(403, "Only the coach can enter a round for another player")
 
     if r.round_type == "tournament":
         if not r.event_id:
@@ -394,29 +371,19 @@ def start_round(r: RoundStartIn, player=Depends(get_current_player)):
     return row
 
 
-def _same_qualifier_group(player_id_a: str, player_id_b: str) -> bool:
-    rows = (
-        supabase.table("qualifier_group_members")
-        .select("qualifier_group_id, player_id")
-        .in_("player_id", [player_id_a, player_id_b])
-        .execute()
-        .data
-    )
-    group_a = next((r["qualifier_group_id"] for r in rows if r["player_id"] == player_id_a), None)
-    group_b = next((r["qualifier_group_id"] for r in rows if r["player_id"] == player_id_b), None)
-    return group_a is not None and group_a == group_b
-
-
 def _can_write_round(round_row: dict, player: dict) -> bool:
     """A round can be written to by whoever started it — OR, for team-ball
     rounds, by any member of that event team, since the whole point is that
-    any teammate can pick up the shared scorecard — OR, for a qualifier
-    round, by whoever is marking it (round_row["marked_by"]), who enters
-    strokes while the round's own player separately enters their own stats
-    — OR, always, by a coach, so mistakes can be corrected without touching
-    the database directly."""
+    any teammate can pick up the shared scorecard — OR, always, by a coach,
+    so mistakes can be corrected without touching the database directly.
+
+    Qualifier cards are the exception: the OFFICIAL strokes are written only
+    by the marker (round_row["marked_by"]) — never by the round's own player,
+    who instead keeps a separate copy via /rounds/{id}/own-score."""
     if player["role"] == "coach":
         return True
+    if round_row.get("marked_by") and round_row.get("round_type") == "qualifier":
+        return round_row["marked_by"] == player["id"]
     if round_row["player_id"] == player["id"]:
         return True
     if round_row.get("marked_by") == player["id"]:
@@ -438,6 +405,8 @@ def submit_hole_score(round_id: UUID, score: HoleScoreIn, player=Depends(get_cur
     round_row = supabase.table("rounds").select("*").eq("id", str(round_id)).single().execute().data
     if not round_row or not _can_write_round(round_row, player):
         raise HTTPException(403, "Not your round")
+    if player["role"] != "coach" and round_row.get("marker_signed_at"):
+        raise HTTPException(400, "This card is already signed — tap Edit to unsign it before changing a score.")
 
     hole_id = str(score.hole_id)
     # Only merge in the fields the caller actually sent (model_fields_set),
@@ -481,6 +450,8 @@ def complete_round(round_id: UUID, player=Depends(get_current_player)):
     round_row = supabase.table("rounds").select("*").eq("id", str(round_id)).single().execute().data
     if not round_row or not _can_write_round(round_row, player):
         raise HTTPException(403, "Not your round")
+    if player["role"] != "coach" and round_row.get("marked_by") and round_row.get("round_type") == "qualifier":
+        raise HTTPException(403, "Qualifier cards are completed by both players signing the card")
 
     scores = supabase.table("hole_scores").select("putts").eq("round_id", str(round_id)).execute().data
     total_putts = sum(s["putts"] for s in scores if s["putts"] is not None) or None
@@ -727,6 +698,288 @@ def get_my_qualifier_group(player=Depends(get_current_player)):
         "tee_time": group["tee_time"],
         "members": sorted((m["players"] for m in members), key=lambda p: p["full_name"]),
     }
+
+
+# ---------------------------------------------------------------------------
+# Qualifier scoring — rotation inside each group, two copies, sign the card.
+#
+# Group members are sorted (name, then id) and arranged in a circle: each
+# player keeps the NEXT player's official score, and the PREVIOUS player keeps
+# theirs. Each player also keeps their own score as a second copy. So every
+# player has two rounds rows involved:
+#   - their own round   (player_id = me,     marked_by = my marker)
+#       official strokes  -> hole_scores        (entered by my marker)
+#       my own copy       -> round_own_scores   (entered by me)
+#   - the round they mark (player_id = target, marked_by = me)
+# Nobody records stats on a qualifier. Once every hole is in and the official
+# and own copies match for both cards, each player hits Sign Card; a round
+# completes (and so counts toward averages / the player's profile) only when
+# BOTH its marker and its player have signed.
+# ---------------------------------------------------------------------------
+
+class QualifierStartIn(BaseModel):
+    course_id: UUID
+
+
+class OwnScoreIn(BaseModel):
+    hole_id: UUID
+    strokes: int
+
+
+def _qualifier_assignments(player_id: str):
+    membership = (
+        supabase.table("qualifier_group_members")
+        .select("qualifier_group_id")
+        .eq("player_id", player_id)
+        .execute()
+        .data
+    )
+    if not membership:
+        return None
+    members = (
+        supabase.table("qualifier_group_members")
+        .select("players(id, full_name, role)")
+        .eq("qualifier_group_id", membership[0]["qualifier_group_id"])
+        .execute()
+        .data
+    )
+    people = sorted(
+        (m["players"] for m in members if m["players"] and m["players"].get("role") != "coach"),
+        key=lambda p: (p["full_name"].lower(), p["id"]),
+    )
+    ids = [p["id"] for p in people]
+    if player_id not in ids or len(people) < 2:
+        return None
+    i = ids.index(player_id)
+    return {
+        "members": people,
+        "target": people[(i + 1) % len(people)],  # whose card I keep
+        "marker": people[(i - 1) % len(people)],  # who keeps mine
+    }
+
+
+def _open_qualifier_round(player_id: str, marker_id: str):
+    rows = (
+        supabase.table("rounds")
+        .select("*")
+        .eq("player_id", player_id)
+        .eq("round_type", "qualifier")
+        .is_("completed_at", "null")
+        .execute()
+        .data
+    )
+    return next((r for r in rows if r.get("marked_by") == marker_id), None)
+
+
+def _ensure_qualifier_round(player_id: str, marker_id: str, course_id: str) -> dict:
+    existing = _open_qualifier_round(player_id, marker_id)
+    if existing:
+        return existing
+    try:
+        return supabase.table("rounds").insert(
+            {"player_id": player_id, "course_id": course_id, "round_type": "qualifier", "marked_by": marker_id}
+        ).execute().data[0]
+    except Exception:
+        # Two groupmates starting at the same instant can both try to create
+        # the same card — the unique index lets one win; pick up the winner.
+        again = _open_qualifier_round(player_id, marker_id)
+        if again:
+            return again
+        raise
+
+
+def _round_has_scores(round_id: str) -> bool:
+    return bool(supabase.table("hole_scores").select("id").eq("round_id", round_id).limit(1).execute().data)
+
+
+def _my_qualifier_cards(player_id: str, include_completed: bool = False) -> dict:
+    assignment = _qualifier_assignments(player_id)
+    base = {
+        "assignment": {"target": assignment["target"], "marker": assignment["marker"]} if assignment else None,
+        "active": False, "course_id": None, "course_name": None, "holes": [], "mine": None, "marking": None,
+    }
+
+    if not assignment:
+        return base
+
+    def latest(rows):
+        rows = [r for r in rows if include_completed or r["completed_at"] is None]
+        rows.sort(key=lambda r: r["started_at"], reverse=True)
+        return rows[0] if rows else None
+
+    # Only cards matching the CURRENT rotation count — a stray in-progress
+    # round from an older group arrangement is ignored here.
+    mine_row = latest([
+        r for r in supabase.table("rounds").select("*").eq("player_id", player_id).eq("round_type", "qualifier").execute().data
+        if r.get("marked_by") == assignment["marker"]["id"]
+    ])
+    marking_row = latest([
+        r for r in supabase.table("rounds").select("*").eq("marked_by", player_id).eq("round_type", "qualifier").execute().data
+        if r["player_id"] == assignment["target"]["id"]
+    ])
+    rows = [r for r in (mine_row, marking_row) if r]
+    if not rows:
+        return base
+
+    course_id = rows[0]["course_id"]
+    holes = (
+        supabase.table("holes")
+        .select("id, hole_number, par, handicap, yardage")
+        .eq("course_id", course_id)
+        .order("hole_number")
+        .execute()
+        .data
+    )
+    course = supabase.table("courses").select("name").eq("id", course_id).single().execute().data
+    round_ids = [r["id"] for r in rows]
+    official = supabase.table("hole_scores").select("round_id, hole_id, strokes").in_("round_id", round_ids).execute().data
+    own = supabase.table("round_own_scores").select("round_id, hole_id, strokes").in_("round_id", round_ids).execute().data
+    people_ids = list({x for r in rows for x in (r["player_id"], r["marked_by"])})
+    names = {
+        p["id"]: p["full_name"]
+        for p in supabase.table("players").select("id, full_name").in_("id", people_ids).execute().data
+    }
+
+    def build(r, kind):
+        off = {s["hole_id"]: s["strokes"] for s in official if s["round_id"] == r["id"]}
+        ow = {s["hole_id"]: s["strokes"] for s in own if s["round_id"] == r["id"]}
+        hole_rows, missing, mismatched = [], [], []
+        for h in holes:
+            o, w = off.get(h["id"]), ow.get(h["id"])
+            hole_rows.append({"hole_id": h["id"], "hole_number": h["hole_number"], "par": h["par"], "official": o, "own": w})
+            if o is None or w is None:
+                missing.append(h["hole_number"])
+            elif o != w:
+                mismatched.append(h["hole_number"])
+        return {
+            "kind": kind,
+            "round_id": r["id"],
+            "player_id": r["player_id"],
+            "player_name": names.get(r["player_id"], "Unknown"),
+            "marker_id": r["marked_by"],
+            "marker_name": names.get(r["marked_by"], "Unknown"),
+            "holes": hole_rows,
+            "official_total": sum(off.values()) if off else None,
+            "own_total": sum(ow.values()) if ow else None,
+            "missing": missing,
+            "mismatched": mismatched,
+            "ready": bool(holes) and not missing and not mismatched,
+            "marker_signed": bool(r.get("marker_signed_at")),
+            "player_signed": bool(r.get("player_signed_at")),
+            "completed": r["completed_at"] is not None,
+        }
+
+    base.update({
+        "active": True,
+        "course_id": course_id,
+        "course_name": course["name"] if course else "Unknown course",
+        "holes": holes,
+        "mine": build(mine_row, "mine") if mine_row else None,
+        "marking": build(marking_row, "marking") if marking_row else None,
+    })
+    return base
+
+
+@app.get("/qualifier/my-cards")
+def qualifier_my_cards(include_completed: bool = False, player=Depends(get_current_player)):
+    return _my_qualifier_cards(player["id"], include_completed)
+
+
+@app.post("/qualifier/start")
+def start_qualifier(body: QualifierStartIn, player=Depends(get_current_player)):
+    if player["role"] == "coach":
+        raise HTTPException(403, "Qualifier cards are kept by the players in each group")
+    a = _qualifier_assignments(player["id"])
+    if not a:
+        raise HTTPException(400, "You're not in a qualifier group with at least one other player yet — ask your coach.")
+
+    me, target, marker = player["id"], a["target"]["id"], a["marker"]["id"]
+    mine = _open_qualifier_round(me, marker)
+    theirs = _open_qualifier_round(target, me)
+
+    # If either card already exists, its course wins so both cards (and every
+    # hole id written to them) are always for the same course.
+    course_id = str((mine or theirs or {}).get("course_id") or body.course_id)
+    mine = mine or _ensure_qualifier_round(me, marker, course_id)
+    theirs = theirs or _ensure_qualifier_round(target, me, course_id)
+
+    if mine["course_id"] != theirs["course_id"]:
+        if not _round_has_scores(theirs["id"]):
+            supabase.table("rounds").update({"course_id": mine["course_id"]}).eq("id", theirs["id"]).execute()
+        elif not _round_has_scores(mine["id"]):
+            supabase.table("rounds").update({"course_id": theirs["course_id"]}).eq("id", mine["id"]).execute()
+        else:
+            raise HTTPException(409, "Your card and your groupmate's card are on different courses — ask your coach to sort it out.")
+    return _my_qualifier_cards(me)
+
+
+@app.post("/rounds/{round_id}/own-score")
+def submit_own_score(round_id: UUID, body: OwnScoreIn, player=Depends(get_current_player)):
+    """The player's OWN copy of their qualifier score — kept separately from
+    the official strokes their marker enters, so the two can be compared."""
+    round_row = supabase.table("rounds").select("*").eq("id", str(round_id)).single().execute().data
+    if not round_row or round_row["round_type"] != "qualifier" or not round_row.get("marked_by"):
+        raise HTTPException(400, "Only a marked qualifier card has an own-score copy")
+    is_coach = player["role"] == "coach"
+    if round_row["player_id"] != player["id"] and not is_coach:
+        raise HTTPException(403, "Not your card")
+    if not is_coach and (round_row.get("player_signed_at") or round_row["completed_at"]):
+        raise HTTPException(400, "This card is already signed — tap Edit to unsign it before changing a score.")
+    if body.strokes < 1 or body.strokes > 20:
+        raise HTTPException(400, "Enter a score between 1 and 20")
+    hole = (
+        supabase.table("holes").select("id").eq("id", str(body.hole_id)).eq("course_id", round_row["course_id"]).execute().data
+    )
+    if not hole:
+        raise HTTPException(400, "That hole isn't on this round's course")
+    return supabase.table("round_own_scores").upsert(
+        {"round_id": str(round_id), "hole_id": str(body.hole_id), "strokes": body.strokes},
+        on_conflict="round_id,hole_id",
+    ).execute().data[0]
+
+
+def _card_problem(card: dict) -> Optional[str]:
+    if card["ready"]:
+        return None
+    who = "your" if card["kind"] == "mine" else f"{card['player_name']}'s"
+    if card["missing"]:
+        return f"Holes {', '.join(map(str, card['missing']))} still need a score on {who} card (both copies)."
+    return f"The two copies of {who} card don't match on hole(s) {', '.join(map(str, card['mismatched']))}."
+
+
+@app.post("/qualifier/sign")
+def sign_qualifier_cards(player=Depends(get_current_player)):
+    state = _my_qualifier_cards(player["id"])
+    cards = [c for c in (state["mine"], state["marking"]) if c]
+    if not cards:
+        raise HTTPException(400, "You don't have a qualifier card in progress")
+    for c in cards:
+        problem = _card_problem(c)
+        if problem:
+            raise HTTPException(400, problem)
+
+    now = datetime.now(timezone.utc).isoformat()
+    for c in cards:
+        field = "player_signed_at" if c["kind"] == "mine" else "marker_signed_at"
+        supabase.table("rounds").update({field: now}).eq("id", c["round_id"]).execute()
+        row = supabase.table("rounds").select("marker_signed_at, player_signed_at").eq("id", c["round_id"]).single().execute().data
+        if row["marker_signed_at"] and row["player_signed_at"]:
+            # Both signatures in: the round is official and lands in the
+            # player's profile / averages from here on.
+            supabase.table("rounds").update({"completed_at": now}).eq("id", c["round_id"]).execute()
+    return _my_qualifier_cards(player["id"], include_completed=True)
+
+
+@app.post("/qualifier/unsign")
+def unsign_qualifier_cards(player=Depends(get_current_player)):
+    state = _my_qualifier_cards(player["id"], include_completed=True)
+    cards = [c for c in (state["mine"], state["marking"]) if c]
+    if any(c["completed"] for c in cards):
+        raise HTTPException(400, "This card is already final — ask your coach if something needs to change.")
+    for c in cards:
+        field = "player_signed_at" if c["kind"] == "mine" else "marker_signed_at"
+        supabase.table("rounds").update({field: None}).eq("id", c["round_id"]).execute()
+    return _my_qualifier_cards(player["id"], include_completed=True)
 
 
 # ---------------------------------------------------------------------------
@@ -1673,7 +1926,10 @@ def live_rounds(player=Depends(get_current_player)):
 
     rounds = (
         supabase.table("rounds")
-        .select("id, started_at, players(full_name), courses(name)")
+        .select(
+            "id, started_at, round_type, marked_by, marker_signed_at, player_signed_at, "
+            "players!player_id(full_name), courses(name)"
+        )
         .is_("completed_at", "null")
         .execute()
         .data
@@ -1681,6 +1937,12 @@ def live_rounds(player=Depends(get_current_player)):
 
     if not rounds:
         return []
+
+    marker_ids = list({r["marked_by"] for r in rounds if r.get("marked_by")})
+    marker_names = (
+        {p["id"]: p["full_name"] for p in supabase.table("players").select("id, full_name").in_("id", marker_ids).execute().data}
+        if marker_ids else {}
+    )
 
     round_ids = [r["id"] for r in rounds]
     all_scores = (
@@ -1705,12 +1967,16 @@ def live_rounds(player=Depends(get_current_player)):
             "player_name": r["players"]["full_name"],
             "course_name": r["courses"]["name"] if r["courses"] else "Unknown course",
             "started_at": r["started_at"],
+            "round_type": r["round_type"],
+            "marker_name": marker_names.get(r.get("marked_by")),
+            "marker_signed": bool(r.get("marker_signed_at")),
+            "player_signed": bool(r.get("player_signed_at")),
             "holes_played": len(scores),
             "current_hole": last_hole + 1 if last_hole < 18 else last_hole,
             "score_to_par": (total_strokes - total_par) if scores else None,
         })
 
-    results.sort(key=lambda x: (x["score_to_par"] is None, x["score_to_par"]))
+    results.sort(key=lambda x: (x["score_to_par"] is None, x["score_to_par"] or 0))
     return results
 
 
@@ -2574,7 +2840,7 @@ def event_leaderboard(event_id: UUID, player=Depends(get_current_player)):
     # -----------------------------------------------------------------
     rounds = (
         supabase.table("rounds")
-        .select("id, player_id, completed_at, players(full_name)")
+        .select("id, player_id, completed_at, players!player_id(full_name)")
         .eq("event_id", str(event_id))
         .order("started_at", desc=True)
         .execute()

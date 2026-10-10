@@ -3,6 +3,7 @@ import { supabase } from '../supabaseClient.js'
 import Login from './Login.jsx'
 import CourseSetup from './CourseSetup.jsx'
 import QualifierGroups from './QualifierGroups.jsx'
+import QualifierRound from './QualifierRound.jsx'
 import Lineup from './Lineup.jsx'
 import RoundSummary from './RoundSummary.jsx'
 import Stats from './Stats.jsx'
@@ -98,8 +99,7 @@ export default function ScoreEntry() {
   const [forPlayer, setForPlayer] = useState(null) // coach-only: entering a round on behalf of this player
   const [pickingForPlayer, setPickingForPlayer] = useState(false)
   const [teamRoster, setTeamRoster] = useState(null)
-  const [qualifierGroup, setQualifierGroup] = useState(null) // { group_number, tee_time, members } for the current player, once Qualifier is picked
-  const [qualifierOwnChosen, setQualifierOwnChosen] = useState(false) // true once they pick "Enter My Own Round" instead of marking a teammate
+  const [qualifierInProgress, setQualifierInProgress] = useState(false) // true when this player has an unsigned qualifier card to pick back up
   const [showQualifierGroups, setShowQualifierGroups] = useState(false) // coach-only: the group setup screen
   const [showLineup, setShowLineup] = useState(false) // coach-only: the lineup setup/scoring screen
   const [quickEntry, setQuickEntry] = useState(false) // coach-for-player only: skip hole-by-hole, enter one set of totals
@@ -154,10 +154,17 @@ export default function ScoreEntry() {
     if (!player) return
     apiCall(`/players/${player.id}/rounds`)
       .then((rounds) => {
-        const mine = rounds.find((r) => !r.completed)
+        // Qualifier cards (marked_by set) are resumed through the Qualifier
+        // screen itself, not this hole-by-hole resume.
+        const mine = rounds.find((r) => !r.completed && !r.marked_by)
         if (mine) setResumableRound(mine)
       })
       .catch(() => {})
+    if (player.role !== 'coach') {
+      apiCall('/qualifier/my-cards')
+        .then((s) => setQualifierInProgress(!!(s.active && (s.mine || s.marking))))
+        .catch(() => {})
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [player])
 
@@ -528,19 +535,13 @@ export default function ScoreEntry() {
     )
   }
 
-  // Qualifier only: once a group's been fetched, make them choose between
-  // marking a groupmate's scorecard and entering their own round before
-  // showing the normal course picker.
-  const qualifierNeedsChoice =
-    roundType === 'qualifier' && !forPlayer && qualifierGroup && qualifierGroup.members.length > 0 && !qualifierOwnChosen
-
   // Not mid-round: show the nav tabs
   return (
     <div>
       <div style={styles.tabBar}>
         <button
           style={{ ...styles.tabBtn, ...(tab === 'play' ? styles.tabBtnActive : {}) }}
-          onClick={() => { setTab('play'); setRoundType(null); setSelectedEventId(''); setSelectedEventTeamId(''); setActiveTeamName(''); setTeamAssignmentError(null); setQualifierGroup(null); setQualifierOwnChosen(false); setQuickEntry(false); setQuickSaved(false) }}
+          onClick={() => { setTab('play'); setRoundType(null); setSelectedEventId(''); setSelectedEventTeamId(''); setActiveTeamName(''); setTeamAssignmentError(null); setQuickEntry(false); setQuickSaved(false) }}
         >
           Play
         </button>
@@ -648,14 +649,14 @@ export default function ScoreEntry() {
           </button>
           <button
             style={styles.roundTypeBtn}
-            onClick={() => {
-              setRoundType('qualifier')
-              setQualifierOwnChosen(false)
-              apiCall('/qualifier/my-group').then(setQualifierGroup).catch(() => setQualifierGroup(null))
-            }}
+            onClick={() => setRoundType('qualifier')}
           >
             <div style={styles.roundTypeName}>Qualifier</div>
-            <div style={styles.roundTypeDesc}>Playing for a tournament spot</div>
+            <div style={styles.roundTypeDesc}>
+              {qualifierInProgress && !forPlayer
+                ? 'Card in progress — tap to pick it back up'
+                : 'Playing for a tournament spot — keep a groupmate\'s card, sign when it matches'}
+            </div>
           </button>
           <button
             style={styles.roundTypeBtn}
@@ -796,38 +797,19 @@ export default function ScoreEntry() {
         </div>
       )}
 
-      {tab === 'play' && qualifierNeedsChoice && (
-        <div style={styles.page}>
-          <button
-            style={styles.linkBtn}
-            onClick={() => { setRoundType(null); setQualifierGroup(null); setQualifierOwnChosen(false) }}
-          >
-            ← Back
-          </button>
-          <h2>Your Qualifier Group</h2>
-          {qualifierGroup.tee_time && <p style={styles.subtitleText}>Tee time: {qualifierGroup.tee_time}</p>}
-          <p style={styles.subtitleText}>
-            Just like a real tournament, you don't keep your own score — pick a groupmate to mark
-            their scorecard (you enter their strokes; they log their own putts, fairways, and GIR),
-            or enter your own round if nobody's marking you.
-          </p>
-          <button style={styles.roundTypeBtn} onClick={() => setQualifierOwnChosen(true)}>
-            <div style={styles.roundTypeName}>Enter My Own Round</div>
-          </button>
-          {qualifierGroup.members.filter((m) => m.id !== player.id).map((m) => (
-            <button key={m.id} style={styles.roundTypeBtn} onClick={() => setForPlayer(m)}>
-              <div style={styles.roundTypeName}>Mark {m.full_name}'s Scorecard</div>
-            </button>
-          ))}
-        </div>
+      {tab === 'play' && roundType === 'qualifier' && !forPlayer && (
+        <QualifierRound
+          isCoach={player.role === 'coach'}
+          onBack={() => { setRoundType(null); setQualifierInProgress(false); apiCall('/qualifier/my-cards').then((s) => setQualifierInProgress(player.role !== 'coach' && !!(s.active && (s.mine || s.marking)))).catch(() => {}) }}
+        />
       )}
 
-      {tab === 'play' && roundType && roundType !== 'tournament' && !qualifierNeedsChoice && (
+      {tab === 'play' && roundType && roundType !== 'tournament' && !(roundType === 'qualifier' && !forPlayer) && (
         <div style={styles.page}>
           <button
             style={styles.linkBtn}
             onClick={() => {
-              setRoundType(null); setQualifierGroup(null); setQualifierOwnChosen(false)
+              setRoundType(null)
               setQuickEntry(false); setQuickSaved(false)
             }}
           >

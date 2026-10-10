@@ -368,3 +368,26 @@ create policy "anyone signed in reads lineup_events" on lineup_events
     for select using (auth.role() = 'authenticated');
 create policy "anyone signed in reads lineup_entries" on lineup_entries
     for select using (auth.role() = 'authenticated');
+
+-- Qualifier scoring v2: each player keeps the next player's official score
+-- (rounds.marked_by = the marker) AND their own separate copy. Nobody logs
+-- stats on a qualifier. A card completes only after both its marker and its
+-- player sign it, and only if the two copies match hole for hole.
+create table round_own_scores (
+    round_id uuid not null references rounds(id) on delete cascade,
+    hole_id uuid not null references holes(id) on delete cascade,
+    strokes int not null check (strokes between 1 and 20),
+    primary key (round_id, hole_id)
+);
+alter table round_own_scores enable row level security;
+create policy "anyone signed in reads round_own_scores" on round_own_scores
+    for select using (auth.role() = 'authenticated');
+
+alter table rounds add column marker_signed_at timestamptz;
+alter table rounds add column player_signed_at timestamptz;
+
+-- At most one open marked qualifier card per player, so two groupmates
+-- starting at the same instant can't create duplicate cards.
+create unique index one_open_marked_qualifier_card
+    on rounds (player_id)
+    where round_type = 'qualifier' and marked_by is not null and completed_at is null;

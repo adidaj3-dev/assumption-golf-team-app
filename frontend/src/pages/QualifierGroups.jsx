@@ -73,8 +73,9 @@ export default function QualifierGroups({ onBack }) {
       <button style={styles.linkBtn} onClick={onBack}>← Back</button>
       <h2>Qualifier Groups</h2>
       <p style={styles.subtitleText}>
-        Set this week's 4 tee-time groups from the roster. Once saved, each player sees their own
-        group and can pick a groupmate to mark their scorecard instead of entering their own.
+        Set this week's 4 tee-time groups from the roster. Inside each group (alphabetical order,
+        wrapping around) every player keeps the next player's official score, while the previous
+        player keeps theirs — and each also keeps their own copy. Groups need at least 2 players.
       </p>
 
       {!roster ? (
