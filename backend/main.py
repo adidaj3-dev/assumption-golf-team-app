@@ -2,14 +2,16 @@
 Golf Team App — Phase 1 backend
 Run with: uvicorn main:app --reload
 """
+import logging
 import os
 import random
 from datetime import datetime, timezone
 from typing import Optional
 from uuid import UUID
 
-from fastapi import FastAPI, HTTPException, Depends, Header
+from fastapi import FastAPI, HTTPException, Depends, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from supabase import create_client, Client
 from dotenv import load_dotenv
@@ -33,6 +35,20 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.exception_handler(Exception)
+async def unhandled_error(request: Request, exc: Exception):
+    """Without this, an unexpected server error comes back with no CORS
+    headers, so the browser hides the real problem behind a generic
+    'Failed to fetch'. Return the actual message (and log the traceback) so
+    the app can show what went wrong."""
+    logging.getLogger("uvicorn.error").exception("Unhandled error on %s %s", request.method, request.url.path)
+    return JSONResponse(
+        status_code=500,
+        content={"detail": f"Server error: {type(exc).__name__}: {exc}"},
+        headers={"Access-Control-Allow-Origin": "*"},
+    )
 
 
 def get_current_player(authorization: Optional[str] = Header(None)) -> dict:
