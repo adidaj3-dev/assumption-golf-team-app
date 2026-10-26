@@ -1,95 +1,82 @@
-# Golf Team App — Phase 0/1 Scaffold
+# Assumption Golf Team App
 
-This is a working starting point for: manual course entry, hole-by-hole score
-entry, scoring stats, and a live public tournament leaderboard. It's Phase 1
-from the build plan — practice sections, the coach dashboard, and scorecard
-OCR come next.
+A phone-first team platform for a college golf program: live hole-by-hole scoring,
+practice combines, qualifiers, lineups, team events, and a coach dashboard that sees
+every round and practice session as it happens.
 
-## 0. Working from an older/underpowered computer? Use GitHub Codespaces
+Built by the head men's golf coach at Assumption University (NCAA Division II) for a
+21-player roster, to replace scattered scorecards, group texts, and spreadsheets.
 
-This project includes a `.devcontainer` config, so you can develop entirely
-in the browser instead of running Python/Node locally:
+> **Status:** in active development. Built with AI-assisted development; designed,
+> directed, and tested by the coach who runs the program.
 
-1. Push this project to a GitHub repo (create an empty repo, then from this
-   folder: `git init && git add . && git commit -m "init" && git remote add
-   origin <your-repo-url> && git push -u origin main`)
-2. On the repo's GitHub page, click **Code → Codespaces → Create codespace
-   on main**
-3. Wait a minute or two — it automatically installs both the backend
-   (Python/FastAPI) and frontend (Node/Vite) dependencies for you
-   (`.devcontainer/setup.sh` runs this automatically)
-4. You get a full VS Code editor in your browser, plus a terminal, with
-   everything already installed — your local machine just needs a browser
-5. When you run `uvicorn` or `npm run dev` inside the Codespace terminal,
-   Codespaces auto-forwards the ports and gives you a clickable preview URL
-   — you can open that URL on your phone or any other computer to test
-6. Free tier: 60 core-hours/month, which is generous for a project this
-   size. It pauses automatically when idle.
+## The problem
 
-Everything below works the same whether you're in a Codespace or running
-locally — the commands are identical.
+A college coach needs to know how every player is trending: scoring, greens in regulation,
+putting, short game, and how they perform when it counts in qualifiers. That data usually
+lives in paper scorecards and memory. Families want to follow tournaments live, and players
+want to see where they stand. This app puts all of it in one place.
 
-## 1. Set up Supabase (free tier is plenty for a 21-player team)
+## What it does
 
-1. Create a project at supabase.com
-2. In the SQL Editor, run `backend/schema.sql` — this creates all the tables,
-   enables real-time sync, and sets up row-level security so players can only
-   edit their own scores while you (as coach) can see everyone's.
-3. In your Supabase Auth settings, enable email sign-in (or whatever method
-   you want your players using).
-4. After each player signs up, insert a matching row in the `players` table
-   with their `id` (matches their auth user id), `full_name`, and `role`
-   ('player' or 'coach' — set yourself to 'coach').
-5. Grab your Project URL, anon public key, and service_role key from
-   Project Settings → API.
+**For players** (installs to the phone home screen like a native app)
+- Enter scores hole by hole, with fairways, greens in regulation, and putts
+- Resume a round, save and exit, and review full scorecards afterward
+- Personal stats: scoring average, GIR %, fairway %, putting, broken out by round type
+- Log practice combines and see their results over time
 
-## 2. Run the backend
+**For the coach**
+- Live dashboard of every active round and practice session as players finish holes
+- Team-wide stats and standings across rounds and combines
+- Qualifier rounds with assigned groups, cross-signed scorecards, and qualifying standings
+- Lineup builder for tournament travel squads
+- Course setup and round corrections
 
-```bash
-cd backend
-python -m venv venv
-source venv/bin/activate   
-pip install -r requirements.txt
-cp .env.example .env         
-uvicorn main:app --reload
-```
+**Practice combines:** 13 built-in tests across driver, irons, wedges, short game, and
+putting, each with scoring rules and benchmark ranges (e.g. Division I and tour level).
 
-Backend runs at http://localhost:8000. Visit http://localhost:8000/docs for
-an interactive API explorer — useful for testing endpoints before the
-frontend is wired up.
+**Team events:** 12 formats for intrasquad competition, including stroke play, best ball,
+scrambles, alternate shot, Chapman, skins, Stableford, Wolf, and the team's own
+"Greyhound Cup." Teams can be auto-generated.
 
-## 3. Run the frontend
+**For families:** one public, no-login leaderboard link per tournament.
 
-```bash
-cd frontend
-npm install
-cp .env.example .env.local     # fill in your Supabase URL + anon key
-npm run dev
-```
+## Built with
 
-Frontend runs at http://localhost:5173.
+| Layer | Tech |
+|---|---|
+| Frontend | React 18, Vite, installable PWA |
+| Backend | Python, FastAPI |
+| Database & auth | Supabase (Postgres, row-level security so players can only edit their own scores) |
+| Dev environment | GitHub Codespaces (works from any computer with a browser) |
 
-- `/` — player score entry (needs login)
-- `/t/your-tournament-slug` — public leaderboard, no login, this is the link
-  you'd text to family/friends during a tournament
+## Roadmap
 
-## What's stubbed vs. real
+- Scorecard photo → automatic course setup (OCR)
+- Real-time push updates instead of polling
+- An unbranded version other college programs can use
 
-- **Real:** course creation, hole-by-hole score entry, round completion,
-  scoring average / GIR% / fairway% calculation, live public leaderboard
-  (polls every 10s — swap for a Supabase real-time subscription if you want
-  instant push instead of polling).
-- **Stubbed for you to wire up:** the actual Supabase Auth login UI (there
-  are pre-built components for this — `@supabase/auth-ui-react` is the
-  fastest path), and the course/tournament picker screen before starting a
-  round (currently hardcoded to a placeholder course ID in `ScoreEntry.jsx`).
+## Run it yourself
 
-## Next steps (later phases)
+Requires a free Supabase project, Python 3.10+, and Node 18+. The repo includes a
+`.devcontainer`, so **Code → Codespaces → Create codespace** installs everything automatically.
 
-- Add `role='coach'` dashboard view aggregating all active rounds live
-- Add practice section tables (putting, short game, irons, driver combine)
-  and entry screens
-- Add scorecard photo → OCR → course auto-creation, feeding the same
-  `POST /courses` endpoint this scaffold already has
-- Add real PNG icons to `frontend/public/` for the home-screen install icon
-  (`icon-192.png`, `icon-512.png`)
+1. **Database:** in your Supabase project's SQL Editor, run `backend/schema.sql`.
+   Enable email sign-in, and give each player a row in `players` (set your own `role` to `coach`).
+2. **Backend:**
+   ```bash
+   cd backend
+   python -m venv venv && source venv/bin/activate
+   pip install -r requirements.txt
+   # create backend/.env with SUPABASE_URL and SUPABASE_SERVICE_KEY
+   uvicorn main:app --reload        # API docs at http://localhost:8000/docs
+   ```
+3. **Frontend:**
+   ```bash
+   cd frontend
+   npm install
+   # create frontend/.env.local with VITE_SUPABASE_URL, VITE_SUPABASE_ANON_KEY, VITE_API_BASE
+   npm run dev                      # http://localhost:5173
+   ```
+
+Never commit `.env` files. The service key bypasses row-level security.
