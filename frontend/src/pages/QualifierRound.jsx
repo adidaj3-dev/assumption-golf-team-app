@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { supabase } from '../supabaseClient.js'
 import { colors, GREYHOUNDS_SIGN_URL, subtleBackdrop } from '../theme.js'
+import CoursePicker from '../components/CoursePicker.jsx'
 
 const API_BASE = import.meta.env.VITE_API_BASE
 
@@ -218,13 +219,7 @@ export default function QualifierRound({ onBack, isCoach = false }) {
         {locked ? (
           <p>Course: <strong>{state.course_name}</strong> (already set by your group)</p>
         ) : (
-          <>
-            <label style={styles.label}>Course</label>
-            <select style={styles.select} value={courseId} onChange={(e) => setCourseId(e.target.value)}>
-              <option value="" disabled>Select a course…</option>
-              {courses.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-            </select>
-          </>
+          <CoursePicker value={courseId} savedCourses={courses} onSelect={(c) => setCourseId(c.id)} />
         )}
 
         {error && <p style={styles.error}>{error}</p>}

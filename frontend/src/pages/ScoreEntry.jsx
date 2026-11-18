@@ -4,6 +4,7 @@ import Login from './Login.jsx'
 import CourseSetup from './CourseSetup.jsx'
 import QualifierGroups from './QualifierGroups.jsx'
 import QualifierRound from './QualifierRound.jsx'
+import CoursePicker from '../components/CoursePicker.jsx'
 import Lineup from './Lineup.jsx'
 import RoundSummary from './RoundSummary.jsx'
 import Stats from './Stats.jsx'
@@ -771,20 +772,12 @@ export default function ScoreEntry() {
 
           {selectedEventId && !teamAssignmentError && (
             <>
-              {!courses.find((c) => c.id === selectedCourseId) && courses.length > 0 && (
-                <>
-                  <label style={styles.label}>Course</label>
-                  <select
-                    style={styles.input}
-                    value={selectedCourseId}
-                    onChange={(e) => setSelectedCourseId(e.target.value)}
-                  >
-                    <option value="" disabled>Select a course…</option>
-                    {courses.map((c) => (
-                      <option key={c.id} value={c.id}>{c.name}</option>
-                    ))}
-                  </select>
-                </>
+              {!tournamentEvents.find((e) => e.id === selectedEventId)?.course_id && (
+                <CoursePicker
+                  value={selectedCourseId}
+                  savedCourses={courses}
+                  onSelect={(c) => setSelectedCourseId(c.id)}
+                />
               )}
 
               {error && <p style={styles.error}>{error}</p>}
@@ -934,21 +927,13 @@ export default function ScoreEntry() {
                 {quickSaving ? 'Saving…' : 'Save Round'}
               </button>
             </>
-          ) : courses.length === 0 ? (
-            <p>No courses yet. {player.role === 'coach' || player.role === 'captain' ? 'Add one from the previous screen.' : 'Ask your coach to add one.'}</p>
           ) : (
             <>
-              <label style={styles.label}>Course</label>
-              <select
-                style={styles.input}
+              <CoursePicker
                 value={selectedCourseId}
-                onChange={(e) => setSelectedCourseId(e.target.value)}
-              >
-                <option value="" disabled>Select a course…</option>
-                {courses.map((c) => (
-                  <option key={c.id} value={c.id}>{c.name}</option>
-                ))}
-              </select>
+                savedCourses={courses}
+                onSelect={(c) => setSelectedCourseId(c.id)}
+              />
 
               {error && <p style={styles.error}>{error}</p>}
 

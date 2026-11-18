@@ -2,9 +2,13 @@
 Golf Team App — Phase 1 backend
 Run with: uvicorn main:app --reload
 """
+import json
 import logging
 import os
 import random
+import urllib.error
+import urllib.parse
+import urllib.request
 from datetime import datetime, timezone
 from typing import Optional
 from uuid import UUID
@@ -224,6 +228,224 @@ def get_course(course_id: UUID):
     )
     course["holes"] = holes
     return course
+
+
+# ---------------------------------------------------------------------------
+# Course database — search the national course service, import on demand.
+#
+# Every course in our own `courses`/`holes` tables is one course + one tee
+# box (so a round, standings, GSPro tie-ins etc. all point at ONE set of
+# holes). Searching hits our saved courses first, then the online course
+# service (GolfCourseAPI). When someone picks an online course and a tee,
+# it's copied into our database once — from then on it's just a saved
+# course, so the database grows by use and nothing re-fetches.
+# ---------------------------------------------------------------------------
+
+GOLF_COURSE_API_BASE = os.environ.get("GOLF_COURSE_API_BASE", "https://api.golfcourseapi.com").rstrip("/")
+GOLF_COURSE_API_KEY = os.environ.get("GOLF_COURSE_API_KEY")
+
+
+def _course_api_get(path: str, params: Optional[dict] = None):
+    if not GOLF_COURSE_API_KEY:
+        raise HTTPException(503, "Online course search isn't set up yet (GOLF_COURSE_API_KEY is missing on the server).")
+    url = f"{GOLF_COURSE_API_BASE}{path}"
+    if params:
+        url += "?" + urllib.parse.urlencode(params)
+    req = urllib.request.Request(
+        url, headers={"Authorization": f"Key {GOLF_COURSE_API_KEY}", "Accept": "application/json"}
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        if e.code in (401, 403):
+            raise HTTPException(502, "The course service rejected our API key.")
+        if e.code == 404:
+            raise HTTPException(404, "That course wasn't found in the course service.")
+        if e.code == 429:
+            raise HTTPException(429, "The course service's daily limit was reached — try again later.")
+        raise HTTPException(502, f"The course service returned an error ({e.code}).")
+    except Exception:
+        raise HTTPException(502, "Couldn't reach the course service.")
+
+
+def _fetch_online_course(external_id: str) -> dict:
+    data = _course_api_get(f"/v1/courses/{urllib.parse.quote(str(external_id), safe='')}")
+    if isinstance(data, dict) and isinstance(data.get("course"), dict):
+        return data["course"]
+    return data if isinstance(data, dict) else {}
+
+
+def _num(value, cast):
+    try:
+        return cast(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _normalized_tees(course: dict) -> list:
+    """Flattens the service's tees (grouped male/female) into one list of
+    tee boxes that have a full 9- or 18-hole layout."""
+    raw = course.get("tees") or {}
+    pairs = []
+    if isinstance(raw, dict):
+        for gender, tee_list in raw.items():
+            for t in tee_list or []:
+                pairs.append((gender, t))
+    elif isinstance(raw, list):
+        for t in raw:
+            pairs.append((t.get("gender") or "male", t))
+    tees = []
+    for gender, t in pairs:
+        holes = t.get("holes") or []
+        if len(holes) not in (9, 18) or not t.get("tee_name"):
+            continue
+        tees.append({
+            "tee_name": str(t["tee_name"]),
+            "gender": "female" if str(gender).lower().startswith("f") else "male",
+            "total_yards": _num(t.get("total_yards"), int),
+            "par_total": _num(t.get("par_total"), int),
+            "course_rating": _num(t.get("course_rating"), float),
+            "slope_rating": _num(t.get("slope_rating"), int),
+            "holes": holes,
+        })
+    return tees
+
+
+def _holes_payload(course_id: str, tee_name: str, holes: list) -> list:
+    n = len(holes)
+    handicaps = [_num(h.get("handicap"), int) for h in holes]
+    if all(x is not None for x in handicaps):
+        order = sorted(handicaps)
+        handicaps = [order.index(x) + 1 for x in handicaps]  # rank → a clean 1..n stroke index
+    else:
+        handicaps = list(range(1, n + 1))
+    payload = []
+    for i, h in enumerate(holes):
+        par = _num(h.get("par"), int)
+        if par is None or not 3 <= par <= 6:
+            raise HTTPException(422, f"The course service has incomplete data for hole {i + 1}. Add this course manually instead.")
+        payload.append({
+            "course_id": course_id,
+            "hole_number": i + 1,
+            "par": par,
+            "handicap": handicaps[i],
+            "yardage": _num(h.get("yardage"), int),
+            "tee_box": tee_name,
+        })
+    return payload
+
+
+@app.get("/course-search")
+def course_search(q: str, player=Depends(get_current_player)):
+    """Search saved courses first, then the online course service."""
+    q = q.strip()
+    if len(q) < 2:
+        return {"saved": [], "online": [], "online_enabled": bool(GOLF_COURSE_API_KEY), "online_error": None}
+    saved = (
+        supabase.table("courses")
+        .select("id, name, city, state, tee_name, course_rating, slope_rating")
+        .ilike("name", f"%{q}%")
+        .order("name")
+        .limit(15)
+        .execute()
+        .data
+    )
+    online, online_error = [], None
+    if GOLF_COURSE_API_KEY and len(q) >= 3:
+        try:
+            data = _course_api_get("/v1/search", {"search_query": q})
+            for c in (data.get("courses") or [])[:15]:
+                loc = c.get("location") or {}
+                online.append({
+                    "external_id": str(c.get("id")),
+                    "club_name": c.get("club_name"),
+                    "course_name": c.get("course_name"),
+                    "city": loc.get("city"),
+                    "state": loc.get("state"),
+                })
+        except HTTPException as e:
+            online_error = e.detail
+    return {"saved": saved, "online": online, "online_enabled": bool(GOLF_COURSE_API_KEY), "online_error": online_error}
+
+
+@app.get("/course-tees")
+def course_tees(external_id: str, player=Depends(get_current_player)):
+    """The tee boxes available for one online course, flagged if already saved."""
+    course = _fetch_online_course(external_id)
+    imported = (
+        supabase.table("courses").select("id, tee_name, gender").eq("external_id", external_id).execute().data
+    )
+    tees = []
+    for t in _normalized_tees(course):
+        local = next((i["id"] for i in imported if i["tee_name"] == t["tee_name"] and i["gender"] == t["gender"]), None)
+        tees.append({**{k: v for k, v in t.items() if k != "holes"}, "number_of_holes": len(t["holes"]), "local_course_id": local})
+    return {"club_name": course.get("club_name"), "course_name": course.get("course_name"), "tees": tees}
+
+
+class CourseImportIn(BaseModel):
+    external_id: str
+    tee_name: str
+    gender: str = "male"
+
+
+@app.post("/course-import")
+def course_import(body: CourseImportIn, player=Depends(get_current_player)):
+    """Copies one tee box of an online course into our own database (once)."""
+    gender = "female" if body.gender.lower().startswith("f") else "male"
+
+    def existing():
+        rows = (
+            supabase.table("courses")
+            .select("id, name")
+            .eq("external_id", body.external_id)
+            .eq("tee_name", body.tee_name)
+            .eq("gender", gender)
+            .execute()
+            .data
+        )
+        return rows[0] if rows else None
+
+    found = existing()
+    if found:
+        return found
+
+    course = _fetch_online_course(body.external_id)
+    tee = next((t for t in _normalized_tees(course) if t["tee_name"] == body.tee_name and t["gender"] == gender), None)
+    if not tee:
+        raise HTTPException(404, "That tee box wasn't found for this course.")
+
+    club, cname = course.get("club_name"), course.get("course_name")
+    base = club or cname or "Course"
+    if cname and club and cname != club:
+        base = f"{club} — {cname}"
+    loc = course.get("location") or {}
+    try:
+        row = supabase.table("courses").insert({
+            "name": f"{base} · {tee['tee_name']} ({'Women' if gender == 'female' else 'Men'})",
+            "created_by": player["id"],
+            "external_id": body.external_id,
+            "tee_name": tee["tee_name"],
+            "gender": gender,
+            "club_name": club,
+            "city": loc.get("city"),
+            "state": loc.get("state"),
+            "country": loc.get("country"),
+            "course_rating": tee["course_rating"],
+            "slope_rating": tee["slope_rating"],
+        }).execute().data[0]
+    except Exception:
+        # Two people importing the same tee at once — the unique index lets one win.
+        found = existing()
+        if found:
+            return found
+        raise
+    try:
+        supabase.table("holes").insert(_holes_payload(row["id"], tee["tee_name"], tee["holes"])).execute()
+    except Exception:
+        supabase.table("courses").delete().eq("id", row["id"]).execute()
+        raise
+    return {"id": row["id"], "name": row["name"]}
 
 
 # ---------------------------------------------------------------------------

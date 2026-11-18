@@ -391,3 +391,23 @@ alter table rounds add column player_signed_at timestamptz;
 create unique index one_open_marked_qualifier_card
     on rounds (player_id)
     where round_type = 'qualifier' and marked_by is not null and completed_at is null;
+
+-- Course database: courses imported from the national course service.
+-- Each row stays "one course + one tee box"; these columns record where it
+-- came from so it's never imported twice.
+alter table courses
+    add column external_id text,
+    add column tee_name text,
+    add column gender text,
+    add column club_name text,
+    add column city text,
+    add column state text,
+    add column country text,
+    add column course_rating numeric,
+    add column slope_rating int;
+create unique index courses_external_tee_key
+    on courses (external_id, tee_name, gender) where external_id is not null;
+
+-- A few real holes are par 6.
+alter table holes drop constraint holes_par_check;
+alter table holes add constraint holes_par_check check (par between 3 and 6);
