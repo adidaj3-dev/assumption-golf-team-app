@@ -252,7 +252,7 @@ def _course_api_get(path: str, params: Optional[dict] = None):
     if params:
         url += "?" + urllib.parse.urlencode(params)
     req = urllib.request.Request(
-        url, headers={"Authorization": f"Key {GOLF_COURSE_API_KEY}", "Accept": "application/json"}
+        url, headers={"Authorization": f"Bearer {GOLF_COURSE_API_KEY}", "Accept": "application/json"}
     )
     try:
         with urllib.request.urlopen(req, timeout=10) as resp:
