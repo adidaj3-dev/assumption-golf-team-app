@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { supabase } from '../supabaseClient.js'
 import { colors } from '../theme.js'
+import Drills from './Drills.jsx'
 
 const API_BASE = import.meta.env.VITE_API_BASE
 
@@ -19,7 +20,7 @@ async function authedFetch(path, options = {}) {
   return res.json()
 }
 
-export default function Practice({ player }) {
+function Combines({ player }) {
   const [view, setView] = useState('selectPlayer') // 'selectPlayer', 'list', 'rules', 'entry', 'result'
   const [teamPlayers, setTeamPlayers] = useState(null)
   const [targetPlayer, setTargetPlayer] = useState(null)
@@ -407,4 +408,54 @@ const styles = {
   scoreValue: { fontSize: '2.2rem', fontWeight: 'bold', color: colors.primary },
   scoreLabel: { color: colors.textMuted },
   error: { color: colors.error, marginTop: '0.75rem' },
+}
+
+
+// The Practice tab: scored Combines and the Drill library, side by side.
+export default function Practice({ player }) {
+  const [section, setSection] = useState('combines')
+  return (
+    <>
+      <div style={toggleStyles.bar}>
+        <button
+          style={{ ...toggleStyles.btn, ...(section === 'combines' ? toggleStyles.btnActive : {}) }}
+          onClick={() => setSection('combines')}
+        >
+          Combines
+        </button>
+        <button
+          style={{ ...toggleStyles.btn, ...(section === 'drills' ? toggleStyles.btnActive : {}) }}
+          onClick={() => setSection('drills')}
+        >
+          Drills
+        </button>
+      </div>
+      {section === 'combines' ? <Combines player={player} /> : <Drills player={player} />}
+    </>
+  )
+}
+
+const toggleStyles = {
+  bar: {
+    display: 'flex',
+    maxWidth: 480,
+    margin: '1.5rem auto 0.75rem',
+    background: 'white',
+    borderRadius: '0.75rem',
+    boxShadow: '0 2px 10px rgba(0,0,0,0.06)',
+    padding: '0.35rem',
+    gap: '0.35rem',
+  },
+  btn: {
+    flex: 1,
+    padding: '0.7rem',
+    fontSize: '1rem',
+    fontWeight: 600,
+    border: 'none',
+    borderRadius: '0.55rem',
+    background: 'transparent',
+    color: colors.primary,
+    cursor: 'pointer',
+  },
+  btnActive: { background: colors.primary, color: 'white' },
 }

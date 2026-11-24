@@ -411,3 +411,55 @@ create unique index courses_external_tee_key
 -- A few real holes are par 6.
 alter table holes drop constraint holes_par_check;
 alter table holes add constraint holes_par_check check (par between 3 and 6);
+
+-- Drill library: drills with your own notes/videos, results players log,
+-- and assignments from the coach (to one player or a whole team).
+create table drills (
+    id uuid primary key default gen_random_uuid(),
+    title text not null,
+    category text not null,
+    level text not null,
+    goal text,
+    setup text,
+    equipment text,
+    instructions text not null,
+    scoring text,
+    targets text,
+    coach_notes text,
+    duration_minutes int,
+    video_url text,
+    metric_label text,                       -- what a result means, e.g. "Putts made out of 10"; null = nothing to log
+    higher_is_better boolean not null default true,
+    is_test boolean not null default false,  -- a scored test (shows a team leaderboard)
+    published boolean not null default true,
+    created_by uuid references players(id),
+    created_at timestamptz default now()
+);
+create unique index drills_title_key on drills (lower(title));
+
+create table drill_results (
+    id uuid primary key default gen_random_uuid(),
+    drill_id uuid not null references drills(id) on delete cascade,
+    player_id uuid not null references players(id) on delete cascade,
+    value numeric not null,
+    notes text,
+    logged_by uuid references players(id),
+    created_at timestamptz default now()
+);
+create index drill_results_drill_idx on drill_results (drill_id, player_id);
+
+create table drill_assignments (
+    id uuid primary key default gen_random_uuid(),
+    drill_id uuid not null references drills(id) on delete cascade,
+    player_id uuid references players(id) on delete cascade,
+    team text check (team in ('men', 'women', 'all')),
+    due_date date,
+    note text,
+    assigned_by uuid references players(id),
+    created_at timestamptz default now(),
+    check ((player_id is not null) <> (team is not null))   -- exactly one target
+);
+
+alter table drills enable row level security;
+alter table drill_results enable row level security;
+alter table drill_assignments enable row level security;

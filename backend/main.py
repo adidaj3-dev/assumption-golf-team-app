@@ -3410,3 +3410,278 @@ def submit_wolf_decision(event_id: UUID, body: WolfDecisionIn, player=Depends(ge
 @app.get("/events/{event_id}/wolf-decisions")
 def get_wolf_decisions(event_id: UUID, player=Depends(get_current_player)):
     return supabase.table("wolf_hole_decisions").select("*").eq("event_id", str(event_id)).execute().data
+
+
+# ---------------------------------------------------------------------------
+# Drill library
+#
+# Drills are plain data (title, category, level, instructions, scoring,
+# targets, video link...). Coaches edit them in the app; players browse,
+# watch the coach's video, log results, and see assignments. A "starter
+# library" (drill_seed.py) can be loaded with one tap and edited freely.
+# ---------------------------------------------------------------------------
+
+DRILL_CATEGORIES = [
+    "putting", "short_game", "wedges", "irons", "driving",
+    "course_management", "mental_game", "fitness", "simulator", "scoring_games",
+]
+DRILL_LEVELS = ["beginner", "intermediate", "advanced", "collegiate"]
+
+
+class DrillIn(BaseModel):
+    title: str
+    category: str
+    level: str
+    instructions: str
+    goal: Optional[str] = None
+    setup: Optional[str] = None
+    equipment: Optional[str] = None
+    scoring: Optional[str] = None
+    targets: Optional[str] = None
+    coach_notes: Optional[str] = None
+    duration_minutes: Optional[int] = None
+    video_url: Optional[str] = None
+    metric_label: Optional[str] = None
+    higher_is_better: bool = True
+    is_test: bool = False
+    published: bool = True
+
+
+def _clean_drill(d: dict) -> dict:
+    if d["category"] not in DRILL_CATEGORIES:
+        raise HTTPException(400, f"Category must be one of: {', '.join(DRILL_CATEGORIES)}")
+    if d["level"] not in DRILL_LEVELS + ["all"]:
+        raise HTTPException(400, "Level must be beginner, intermediate, advanced, collegiate or all")
+    if not d["title"].strip() or not d["instructions"].strip():
+        raise HTTPException(400, "A drill needs a title and instructions")
+    url = (d.get("video_url") or "").strip()
+    if url and not url.lower().startswith(("http://", "https://")):
+        raise HTTPException(400, "Video link must start with http:// or https://")
+    # empty strings → null so the app doesn't show blank sections
+    return {k: (v.strip() or None) if isinstance(v, str) and k not in ("title", "instructions") else v for k, v in d.items()}
+
+
+def _require_coach(player: dict):
+    if player["role"] != "coach":
+        raise HTTPException(403, "Coach access only")
+
+
+def _best(values: list, higher_is_better: bool):
+    if not values:
+        return None
+    return max(values) if higher_is_better else min(values)
+
+
+@app.get("/drills")
+def list_drills(
+    category: Optional[str] = None,
+    level: Optional[str] = None,
+    q: Optional[str] = None,
+    tests_only: bool = False,
+    player=Depends(get_current_player),
+):
+    query = supabase.table("drills").select(
+        "id, title, category, level, goal, duration_minutes, video_url, metric_label, is_test, published"
+    )
+    if player["role"] != "coach":
+        query = query.eq("published", True)
+    if category:
+        query = query.eq("category", category)
+    if level:
+        query = query.in_("level", [level, "all"])
+    if tests_only:
+        query = query.eq("is_test", True)
+    rows = query.order("title").execute().data
+    if q and q.strip():
+        needle = q.strip().lower()
+        rows = [r for r in rows if needle in (r["title"] or "").lower() or needle in (r["goal"] or "").lower()]
+    return rows
+
+
+@app.get("/drills/{drill_id}")
+def get_drill(drill_id: UUID, player=Depends(get_current_player)):
+    drill = supabase.table("drills").select("*").eq("id", str(drill_id)).execute().data
+    if not drill or (not drill[0]["published"] and player["role"] != "coach"):
+        raise HTTPException(404, "Drill not found")
+    drill = drill[0]
+
+    results = (
+        supabase.table("drill_results")
+        .select("id, player_id, value, notes, created_at")
+        .eq("drill_id", str(drill_id))
+        .order("created_at", desc=True)
+        .execute()
+        .data
+    )
+    mine = [r for r in results if r["player_id"] == player["id"]]
+    drill["my_results"] = mine[:15]
+    drill["my_best"] = _best([float(r["value"]) for r in mine], drill["higher_is_better"])
+
+    # Team board: each player's best, best first. Players never see the coach.
+    names = {
+        p["id"]: p["full_name"]
+        for p in supabase.table("players").select("id, full_name, role").execute().data
+        if p["role"] != "coach"
+    }
+    by_player: dict = {}
+    for r in results:
+        if r["player_id"] in names:
+            by_player.setdefault(r["player_id"], []).append(float(r["value"]))
+    board = [
+        {"player_id": pid, "full_name": names[pid], "best": _best(vals, drill["higher_is_better"]), "attempts": len(vals)}
+        for pid, vals in by_player.items()
+    ]
+    board.sort(key=lambda b: b["best"], reverse=drill["higher_is_better"])
+    drill["team_board"] = board[:10]
+    return drill
+
+
+@app.post("/drills")
+def create_drill(body: DrillIn, player=Depends(get_current_player)):
+    _require_coach(player)
+    data = _clean_drill(body.model_dump())
+    try:
+        return supabase.table("drills").insert({**data, "created_by": player["id"]}).execute().data[0]
+    except Exception:
+        raise HTTPException(400, "A drill with that title already exists")
+
+
+@app.patch("/drills/{drill_id}")
+def update_drill(drill_id: UUID, body: DrillIn, player=Depends(get_current_player)):
+    _require_coach(player)
+    data = _clean_drill(body.model_dump())
+    rows = supabase.table("drills").update(data).eq("id", str(drill_id)).execute().data
+    if not rows:
+        raise HTTPException(404, "Drill not found")
+    return rows[0]
+
+
+@app.delete("/drills/{drill_id}")
+def delete_drill(drill_id: UUID, player=Depends(get_current_player)):
+    _require_coach(player)
+    supabase.table("drills").delete().eq("id", str(drill_id)).execute()
+    return {"deleted": True}
+
+
+class DrillResultIn(BaseModel):
+    value: float
+    notes: Optional[str] = None
+    player_id: Optional[UUID] = None  # coach only — log on someone's behalf
+
+
+@app.post("/drills/{drill_id}/results")
+def log_drill_result(drill_id: UUID, body: DrillResultIn, player=Depends(get_current_player)):
+    drill = supabase.table("drills").select("id, metric_label").eq("id", str(drill_id)).execute().data
+    if not drill:
+        raise HTTPException(404, "Drill not found")
+    if not drill[0]["metric_label"]:
+        raise HTTPException(400, "This drill doesn't track a result")
+    target = str(body.player_id) if body.player_id else player["id"]
+    if target != player["id"] and player["role"] != "coach":
+        raise HTTPException(403, "You can only log your own results")
+    return supabase.table("drill_results").insert({
+        "drill_id": str(drill_id),
+        "player_id": target,
+        "value": body.value,
+        "notes": (body.notes or "").strip() or None,
+        "logged_by": player["id"],
+    }).execute().data[0]
+
+
+@app.delete("/drill-results/{result_id}")
+def delete_drill_result(result_id: UUID, player=Depends(get_current_player)):
+    row = supabase.table("drill_results").select("player_id").eq("id", str(result_id)).execute().data
+    if not row:
+        raise HTTPException(404, "Result not found")
+    if row[0]["player_id"] != player["id"] and player["role"] != "coach":
+        raise HTTPException(403, "Not your result")
+    supabase.table("drill_results").delete().eq("id", str(result_id)).execute()
+    return {"deleted": True}
+
+
+class DrillAssignmentIn(BaseModel):
+    drill_id: UUID
+    player_id: Optional[UUID] = None
+    team: Optional[str] = None  # 'men', 'women' or 'all'
+    due_date: Optional[str] = None  # YYYY-MM-DD
+    note: Optional[str] = None
+
+
+@app.post("/drill-assignments")
+def assign_drill(body: DrillAssignmentIn, player=Depends(get_current_player)):
+    _require_coach(player)
+    if (body.player_id is None) == (body.team is None):
+        raise HTTPException(400, "Assign to one player OR a team")
+    if body.team and body.team not in ("men", "women", "all"):
+        raise HTTPException(400, "Team must be men, women or all")
+    return supabase.table("drill_assignments").insert({
+        "drill_id": str(body.drill_id),
+        "player_id": str(body.player_id) if body.player_id else None,
+        "team": body.team,
+        "due_date": body.due_date or None,
+        "note": (body.note or "").strip() or None,
+        "assigned_by": player["id"],
+    }).execute().data[0]
+
+
+@app.get("/drill-assignments/mine")
+def my_drill_assignments(player=Depends(get_current_player)):
+    """Drills assigned to me directly or to my team, newest first, flagged
+    done once I've logged a result for that drill after it was assigned."""
+    teams = ["all"] + ([player["team"]] if player.get("team") else [])
+    direct = supabase.table("drill_assignments").select("*, drills(id, title, category, metric_label)").eq("player_id", player["id"]).execute().data
+    by_team = supabase.table("drill_assignments").select("*, drills(id, title, category, metric_label)").in_("team", teams).execute().data
+    rows = sorted(direct + by_team, key=lambda r: r["created_at"], reverse=True)
+    results = supabase.table("drill_results").select("drill_id, created_at").eq("player_id", player["id"]).execute().data
+    out = []
+    for r in rows:
+        if not r.get("drills"):
+            continue
+        done = any(x["drill_id"] == r["drill_id"] and x["created_at"] >= r["created_at"] for x in results)
+        out.append({
+            "id": r["id"], "drill_id": r["drill_id"], "title": r["drills"]["title"],
+            "category": r["drills"]["category"], "due_date": r["due_date"], "note": r["note"], "done": done,
+        })
+    return out
+
+
+@app.get("/drill-assignments")
+def list_drill_assignments(player=Depends(get_current_player)):
+    _require_coach(player)
+    rows = (
+        supabase.table("drill_assignments")
+        .select("id, drill_id, player_id, team, due_date, note, created_at, drills(title), players!player_id(full_name)")
+        .order("created_at", desc=True)
+        .limit(50)
+        .execute()
+        .data
+    )
+    return [{
+        "id": r["id"], "drill_id": r["drill_id"], "title": (r.get("drills") or {}).get("title"),
+        "target": (r.get("players") or {}).get("full_name") or {"men": "Men's team", "women": "Women's team", "all": "Whole team"}.get(r["team"]),
+        "due_date": r["due_date"], "note": r["note"],
+    } for r in rows]
+
+
+@app.delete("/drill-assignments/{assignment_id}")
+def delete_drill_assignment(assignment_id: UUID, player=Depends(get_current_player)):
+    _require_coach(player)
+    supabase.table("drill_assignments").delete().eq("id", str(assignment_id)).execute()
+    return {"deleted": True}
+
+
+@app.post("/drills/load-starter-library")
+def load_starter_library(player=Depends(get_current_player)):
+    """Adds the built-in starter drills that aren't in the library yet (matched
+    by title). Safe to run again — it never overwrites or duplicates."""
+    _require_coach(player)
+    from drill_seed import DRILLS
+
+    have = {d["title"].lower() for d in supabase.table("drills").select("title").execute().data}
+    fresh = [
+        {**_clean_drill(DrillIn(**d).model_dump()), "created_by": player["id"]}
+        for d in DRILLS if d["title"].lower() not in have
+    ]
+    if fresh:
+        supabase.table("drills").insert(fresh).execute()
+    return {"added": len(fresh), "already_there": len(DRILLS) - len(fresh)}
