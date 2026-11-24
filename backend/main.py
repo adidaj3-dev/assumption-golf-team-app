@@ -337,8 +337,10 @@ def _holes_payload(course_id: str, tee_name: str, holes: list) -> list:
 
 
 @app.get("/course-search")
-def course_search(q: str, player=Depends(get_current_player)):
-    """Search saved courses first, then the online course service."""
+def course_search(q: str, online: bool = False, player=Depends(get_current_player)):
+    """Search our saved courses. The online course service is only queried
+    when asked (online=true) — each call counts against the daily limit, so
+    the app only goes online when nothing saved matches or the user asks."""
     q = q.strip()
     if len(q) < 2:
         return {"saved": [], "online": [], "online_enabled": bool(GOLF_COURSE_API_KEY), "online_error": None}
@@ -351,13 +353,13 @@ def course_search(q: str, player=Depends(get_current_player)):
         .execute()
         .data
     )
-    online, online_error = [], None
-    if GOLF_COURSE_API_KEY and len(q) >= 3:
+    online_results, online_error = [], None
+    if online and GOLF_COURSE_API_KEY and len(q) >= 3:
         try:
             data = _course_api_get("/v1/search", {"search_query": q})
             for c in (data.get("courses") or [])[:15]:
                 loc = c.get("location") or {}
-                online.append({
+                online_results.append({
                     "external_id": str(c.get("id")),
                     "club_name": c.get("club_name"),
                     "course_name": c.get("course_name"),
@@ -366,7 +368,7 @@ def course_search(q: str, player=Depends(get_current_player)):
                 })
         except HTTPException as e:
             online_error = e.detail
-    return {"saved": saved, "online": online, "online_enabled": bool(GOLF_COURSE_API_KEY), "online_error": online_error}
+    return {"saved": saved, "online": online_results, "online_enabled": bool(GOLF_COURSE_API_KEY), "online_error": online_error}
 
 
 @app.get("/course-tees")

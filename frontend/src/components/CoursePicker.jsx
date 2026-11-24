@@ -44,8 +44,12 @@ export default function CoursePicker({ value, savedCourses = [], onSelect }) {
   const [error, setError] = useState(null)
   const [showAll, setShowAll] = useState(false)
   const latestSearch = useRef(0)
+  const teesCache = useRef({}) // external_id -> tee list
+  const onlineCache = useRef({}) // query -> online results, so repeating a search costs nothing
 
-  // Debounced search as they type.
+  // Search our own saved courses as they type. The online course database is
+  // only asked when nothing saved matches (or they tap the button), because
+  // every online search counts against the daily limit.
   useEffect(() => {
     const q = query.trim()
     if (q.length < 2) {
@@ -55,20 +59,43 @@ export default function CoursePicker({ value, savedCourses = [], onSelect }) {
     }
     setSearching(true)
     const ticket = ++latestSearch.current
-    const timer = setTimeout(() => {
-      api(`/course-search?q=${encodeURIComponent(q)}`)
-        .then((r) => {
-          if (ticket === latestSearch.current) setResults(r)
-        })
-        .catch((err) => {
-          if (ticket === latestSearch.current) setError(err.message)
-        })
-        .finally(() => {
-          if (ticket === latestSearch.current) setSearching(false)
-        })
-    }, 350)
+    const timer = setTimeout(async () => {
+      try {
+        const r = await api(`/course-search?q=${encodeURIComponent(q)}`)
+        if (ticket !== latestSearch.current) return
+        setResults({ ...r, onlineSearched: false })
+        if (r.saved.length === 0 && r.online_enabled && q.length >= 3) await runOnline(q, ticket)
+      } catch (err) {
+        if (ticket === latestSearch.current) setError(err.message)
+      } finally {
+        if (ticket === latestSearch.current) setSearching(false)
+      }
+    }, 450)
     return () => clearTimeout(timer)
   }, [query])
+
+  async function runOnline(q, ticket) {
+    const key = q.toLowerCase()
+    let o = onlineCache.current[key]
+    if (!o) {
+      o = await api(`/course-search?q=${encodeURIComponent(q)}&online=true`)
+      if (!o.online_error) onlineCache.current[key] = o
+    }
+    if (ticket !== latestSearch.current) return
+    setResults((prev) => (prev ? { ...prev, online: o.online, online_error: o.online_error, onlineSearched: true } : prev))
+  }
+
+  async function searchOnlineClick() {
+    setError(null)
+    setSearching(true)
+    try {
+      await runOnline(query.trim(), latestSearch.current)
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setSearching(false)
+    }
+  }
 
   function choose(course) {
     setSelected(course)
@@ -83,7 +110,8 @@ export default function CoursePicker({ value, savedCourses = [], onSelect }) {
     setError(null)
     setLoadingTees(c.external_id)
     try {
-      const data = await api(`/course-tees?external_id=${encodeURIComponent(c.external_id)}`)
+      const data = teesCache.current[c.external_id] || await api(`/course-tees?external_id=${encodeURIComponent(c.external_id)}`)
+      teesCache.current[c.external_id] = data
       setOpenCourse({
         external_id: c.external_id,
         label: [data.club_name, data.course_name && data.course_name !== data.club_name ? data.course_name : null]
@@ -228,7 +256,14 @@ export default function CoursePicker({ value, savedCourses = [], onSelect }) {
             </div>
           )}
 
-          {results && !searching && results.saved.length === 0 && results.online.length === 0 && (
+          {results && !searching && results.saved.length > 0 && !results.onlineSearched && results.online_enabled && (
+            <button type="button" style={styles.linkBtn} onClick={searchOnlineClick}>
+              Not listed? Search the course database
+            </button>
+          )}
+
+          {results && !searching && results.saved.length === 0 && results.online.length === 0 &&
+            (results.onlineSearched || !results.online_enabled) && (
             <p style={styles.hint}>
               No matches.{' '}
               {results.online_error
@@ -238,7 +273,7 @@ export default function CoursePicker({ value, savedCourses = [], onSelect }) {
                   : 'Try just the club name, or add it manually.'}
             </p>
           )}
-          {results && results.online_error && (results.saved.length > 0 || results.online.length > 0) && (
+          {results && results.onlineSearched && results.online_error && (results.saved.length > 0 || results.online.length > 0) && (
             <p style={styles.hint}>{results.online_error}</p>
           )}
         </>
