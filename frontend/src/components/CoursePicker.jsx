@@ -42,6 +42,7 @@ export default function CoursePicker({ value, savedCourses = [], onSelect }) {
   const [importing, setImporting] = useState(null)
   const [selected, setSelected] = useState(null) // { id, name } the person picked in this component
   const [error, setError] = useState(null)
+  const [showAll, setShowAll] = useState(false)
   const latestSearch = useRef(0)
 
   // Debounced search as they type.
@@ -136,7 +137,9 @@ export default function CoursePicker({ value, savedCourses = [], onSelect }) {
     )
   }
 
-  const showSaved = !results ? savedCourses.slice(0, 8) : results.saved
+  // Newest first, so a course you just added is right at the top.
+  const recentFirst = [...savedCourses].sort((a, b) => (b.created_at || '9').localeCompare(a.created_at || '9'))
+  const showSaved = results ? results.saved : showAll ? recentFirst : recentFirst.slice(0, 8)
   const showSavedHeading = !openCourse && showSaved.length > 0
 
   return (
@@ -185,13 +188,18 @@ export default function CoursePicker({ value, savedCourses = [], onSelect }) {
         <>
           {showSavedHeading && (
             <div style={styles.panel}>
-              <div style={styles.panelTitle}>{results ? 'Saved courses' : 'Your courses'}</div>
+              <div style={styles.panelTitle}>{results ? 'Saved courses' : 'Your courses (newest first)'}</div>
               {showSaved.map((c) => (
                 <button key={c.id} type="button" style={styles.row} onClick={() => choose({ id: c.id, name: c.name })}>
                   <span style={styles.rowMain}>{c.name}</span>
                   {(c.city || c.state) && <span style={styles.rowSub}>{[c.city, c.state].filter(Boolean).join(', ')}</span>}
                 </button>
               ))}
+              {!results && savedCourses.length > 8 && (
+                <button type="button" style={styles.linkBtn} onClick={() => setShowAll(!showAll)}>
+                  {showAll ? 'Show fewer' : `Show all ${savedCourses.length} saved courses`}
+                </button>
+              )}
             </div>
           )}
 

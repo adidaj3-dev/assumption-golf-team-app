@@ -219,7 +219,12 @@ export default function QualifierRound({ onBack, isCoach = false }) {
         {locked ? (
           <p>Course: <strong>{state.course_name}</strong> (already set by your group)</p>
         ) : (
-          <CoursePicker value={courseId} savedCourses={courses} onSelect={(c) => setCourseId(c.id)} />
+          <CoursePicker value={courseId} savedCourses={courses} onSelect={(c) => {
+            setCourseId(c.id)
+            if (c.id && !courses.some((x) => x.id === c.id)) {
+              setCourses((prev) => [{ id: c.id, name: c.name, created_at: new Date().toISOString() }, ...prev])
+            }
+          }} />
         )}
 
         {error && <p style={styles.error}>{error}</p>}

@@ -148,6 +148,15 @@ export default function ScoreEntry() {
       .catch((err) => setError(err.message))
   }, [session])
 
+  // A course picked from the national database is now saved in our own list;
+  // add it here so it shows up in "Your courses" without reloading the app.
+  function rememberCourse(c) {
+    setSelectedCourseId(c.id)
+    if (c.id && !courses.some((x) => x.id === c.id)) {
+      setCourses((prev) => [{ id: c.id, name: c.name, created_at: new Date().toISOString() }, ...prev])
+    }
+  }
+
   // Once we know who's logged in, check whether they have a round they
   // started and never finished (closed the app instead of hitting End
   // Round) — offer to pick it back up instead of silently losing track.
@@ -776,7 +785,7 @@ export default function ScoreEntry() {
                 <CoursePicker
                   value={selectedCourseId}
                   savedCourses={courses}
-                  onSelect={(c) => setSelectedCourseId(c.id)}
+                  onSelect={rememberCourse}
                 />
               )}
 
@@ -932,7 +941,7 @@ export default function ScoreEntry() {
               <CoursePicker
                 value={selectedCourseId}
                 savedCourses={courses}
-                onSelect={(c) => setSelectedCourseId(c.id)}
+                onSelect={rememberCourse}
               />
 
               {error && <p style={styles.error}>{error}</p>}
